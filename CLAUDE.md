@@ -63,7 +63,7 @@ The service subscribes to these NATS subjects (defined in go-mod/subjects/qms):
 - Addon management
 - Overage checking
 
-All handlers follow request/response pattern with protobuf message serialization.
+All handlers follow a request/response pattern; messages are plain JSON using the types from github.com/cyverse-de/p (whose struct tags are the wire contract).
 
 ## Configuration
 
@@ -106,4 +106,4 @@ nats pub --reply=foo.bar cyverse.qms.user.summary.get '{"username":"sarahr"}'
 - PostgreSQL for data persistence
 - goqu for SQL query building
 - OpenTelemetry for observability
-- Protocol Buffers for message serialization
+- Message types from github.com/cyverse-de/p, serialized as plain JSON (wire-compatible with the old protojson format)
