@@ -8,6 +8,7 @@ import (
 
 	"github.com/cyverse-de/go-mod/logging"
 	"github.com/cyverse-de/go-mod/pbinit"
+	"github.com/cyverse-de/p/go/ptypes"
 	"github.com/cyverse-de/p/go/qms"
 	"github.com/cyverse-de/subscriptions/common"
 	"github.com/cyverse-de/subscriptions/db"
@@ -17,7 +18,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var log = logging.Log.WithFields(logrus.Fields{"package": "apps"})
@@ -161,10 +161,11 @@ func (a *App) getUserUpdates(ctx context.Context, request *qms.UpdateListRequest
 		return response
 	}
 
+	response.Updates = []*qms.Update{}
 	for _, mu := range mUpdates {
 		response.Updates = append(response.Updates, &qms.Update{
 			Uuid:          mu.ID,
-			EffectiveDate: timestamppb.New(mu.EffectiveDate),
+			EffectiveDate: ptypes.New(mu.EffectiveDate),
 			ValueType:     mu.ValueType,
 			Value:         mu.Value,
 			ResourceType: &qms.ResourceType{
@@ -370,7 +371,7 @@ func (a *App) addUserUpdate(ctx context.Context, request *qms.AddUpdateRequest) 
 				Unit:       recordedUpdate.ResourceType.Unit,
 				Consumable: recordedUpdate.ResourceType.Consumable,
 			},
-			EffectiveDate: timestamppb.New(recordedUpdate.EffectiveDate),
+			EffectiveDate: ptypes.New(recordedUpdate.EffectiveDate),
 			Operation: &qms.UpdateOperation{
 				Uuid: recordedUpdate.UpdateOperation.ID,
 				Name: recordedUpdate.UpdateOperation.Name,

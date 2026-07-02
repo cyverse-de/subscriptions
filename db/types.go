@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cyverse-de/p/go/ptypes"
 	"github.com/cyverse-de/p/go/qms"
 	"github.com/doug-martin/goqu/v9"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type GoquDatabase interface {
@@ -204,8 +204,8 @@ func (up Subscription) ToQMSSubscription() *qms.Subscription {
 
 	return &qms.Subscription{
 		Uuid:               up.ID,
-		EffectiveStartDate: timestamppb.New(up.EffectiveStartDate),
-		EffectiveEndDate:   timestamppb.New(up.EffectiveEndDate),
+		EffectiveStartDate: ptypes.New(up.EffectiveStartDate),
+		EffectiveEndDate:   ptypes.New(up.EffectiveEndDate),
 		User:               up.User.ToQMSUser(),
 		Plan:               up.Plan.ToQMSPlan(),
 		Quotas:             quotas,
@@ -383,7 +383,7 @@ func (pqd PlanQuotaDefault) ToQMSQuotaDefault() *qms.QuotaDefault {
 		Uuid:          pqd.ID,
 		QuotaValue:    pqd.QuotaValue,
 		ResourceType:  pqd.ResourceType.ToQMSResourceType(),
-		EffectiveDate: timestamppb.New(pqd.EffectiveDate),
+		EffectiveDate: ptypes.New(pqd.EffectiveDate),
 	}
 }
 
@@ -432,7 +432,7 @@ func NewPlanRateFromQMS(r *qms.PlanRate, planID string) *PlanRate {
 func (pr PlanRate) ToQMSPlanRate() *qms.PlanRate {
 	return &qms.PlanRate{
 		Uuid:          pr.ID,
-		EffectiveDate: timestamppb.New(pr.EffectiveDate),
+		EffectiveDate: ptypes.New(pr.EffectiveDate),
 		Rate:          pr.Rate,
 	}
 }
@@ -486,9 +486,9 @@ func (u Usage) ToQMSUsage() *qms.Usage {
 		Usage:          u.Usage,
 		ResourceType:   u.ResourceType.ToQMSResourceType(),
 		CreatedBy:      u.CreatedBy,
-		CreatedAt:      timestamppb.New(u.CreatedAt),
+		CreatedAt:      ptypes.New(u.CreatedAt),
 		LastModifiedBy: u.LastModifiedBy,
-		LastModifiedAt: timestamppb.New(u.LastModifiedAt),
+		LastModifiedAt: ptypes.New(u.LastModifiedAt),
 	}
 }
 
@@ -524,9 +524,9 @@ func (q Quota) ToQMSQuota() *qms.Quota {
 		Quota:          q.Quota,
 		ResourceType:   q.ResourceType.ToQMSResourceType(),
 		CreatedBy:      q.CreatedBy,
-		CreatedAt:      timestamppb.New(q.CreatedAt),
+		CreatedAt:      ptypes.New(q.CreatedAt),
 		LastModifiedBy: q.LastModifiedBy,
-		LastModifiedAt: timestamppb.New(q.LastModifiedAt),
+		LastModifiedAt: ptypes.New(q.LastModifiedAt),
 	}
 }
 
@@ -661,7 +661,7 @@ func NewAddonRateFromQMS(r *qms.AddonRate, addonID string) *AddonRate {
 func (r *AddonRate) ToQMSType() *qms.AddonRate {
 	return &qms.AddonRate{
 		Uuid:          r.ID,
-		EffectiveDate: timestamppb.New(r.EffectiveDate),
+		EffectiveDate: ptypes.New(r.EffectiveDate),
 		Rate:          r.Rate,
 	}
 }

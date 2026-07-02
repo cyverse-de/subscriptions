@@ -34,6 +34,7 @@ func (a *App) getUserOverages(ctx context.Context, request *qms.AllUserOveragesR
 		return response
 	}
 
+	response.Overages = []*qms.Overage{}
 	for _, r := range results {
 		quota := r.QuotaValue
 		usage := r.UsageValue

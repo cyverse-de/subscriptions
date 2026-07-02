@@ -122,6 +122,7 @@ func (a *App) listAddons(ctx context.Context) *qms.AddonListResponse {
 		return response
 	}
 
+	response.Addons = []*qms.Addon{}
 	for _, addon := range results {
 		response.Addons = append(response.Addons, addon.ToQMSType())
 	}
@@ -323,6 +324,7 @@ func (a *App) listSubscriptionAddons(ctx context.Context, request *requests.ByUU
 			return err
 		}
 
+		response.SubscriptionAddons = []*qms.SubscriptionAddon{}
 		for _, addon := range results {
 			response.SubscriptionAddons = append(response.SubscriptionAddons, addon.ToQMSType())
 		}

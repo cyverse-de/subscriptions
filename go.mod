@@ -4,15 +4,15 @@ go 1.24.2
 
 require (
 	github.com/cyverse-de/go-mod/cfg v0.0.2
-	github.com/cyverse-de/go-mod/gotelnats v0.0.15
+	github.com/cyverse-de/go-mod/gotelnats v0.1.0
 	github.com/cyverse-de/go-mod/logging v0.0.3
 	github.com/cyverse-de/go-mod/otelutils v0.0.5
-	github.com/cyverse-de/go-mod/pbinit v0.1.13
-	github.com/cyverse-de/go-mod/protobufjson v0.0.7
+	github.com/cyverse-de/go-mod/pbinit v0.2.0
 	github.com/cyverse-de/go-mod/subjects v0.1.5
-	github.com/cyverse-de/p/go/qms v0.2.1
-	github.com/cyverse-de/p/go/requests v0.0.3
-	github.com/cyverse-de/p/go/svcerror v0.0.8
+	github.com/cyverse-de/p/go/qms v0.3.0
+	github.com/cyverse-de/p/go/ptypes v0.1.0
+	github.com/cyverse-de/p/go/requests v0.1.0
+	github.com/cyverse-de/p/go/svcerror v0.1.0
 	github.com/doug-martin/goqu/v9 v9.19.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/knadh/koanf v1.5.0
@@ -25,17 +25,15 @@ require (
 	github.com/uptrace/opentelemetry-go-extra/otelsql v0.3.2
 	github.com/uptrace/opentelemetry-go-extra/otelsqlx v0.3.2
 	go.opentelemetry.io/otel v1.31.0
-	google.golang.org/protobuf v1.36.6
 )
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
-	github.com/cyverse-de/p v0.0.0-20241022195522-7109f3ff6072 // indirect
-	github.com/cyverse-de/p/go/analysis v0.0.16 // indirect
-	github.com/cyverse-de/p/go/containers v0.0.2 // indirect
-	github.com/cyverse-de/p/go/header v0.0.4 // indirect
-	github.com/cyverse-de/p/go/monitoring v0.0.5 // indirect
-	github.com/cyverse-de/p/go/user v0.0.11 // indirect
+	github.com/cyverse-de/p/go/analysis v0.1.0 // indirect
+	github.com/cyverse-de/p/go/containers v0.1.0 // indirect
+	github.com/cyverse-de/p/go/header v0.1.0 // indirect
+	github.com/cyverse-de/p/go/monitoring v0.1.0 // indirect
+	github.com/cyverse-de/p/go/user v0.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -69,4 +67,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241021214115-324edc3d5d38 // indirect
 	google.golang.org/grpc v1.67.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	google.golang.org/genproto v0.0.0-20250603155806-513f23925822 // indirect
 )
