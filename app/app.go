@@ -98,6 +98,13 @@ func (a *App) FixUsername(username string) (string, error) {
 }
 
 func (a *App) validateUpdate(request *qms.AddUpdateRequest) (string, error) {
+	// The lax JSON decoder accepts requests missing nested objects, so guard
+	// before dereferencing; the old protojson codec never produced these.
+	if request.GetUpdate() == nil || request.GetUpdate().GetUser() == nil ||
+		request.GetUpdate().GetResourceType() == nil || request.GetUpdate().GetOperation() == nil {
+		return "", errors.ErrInvalidRequestBody
+	}
+
 	username, err := a.FixUsername(request.Update.User.Username)
 	if err != nil {
 		return "", err
@@ -145,6 +152,11 @@ func (a *App) GreetingHTTPHandler(ctx echo.Context) error {
 func (a *App) getUserUpdates(ctx context.Context, request *qms.UpdateListRequest) *qms.UpdateListResponse {
 	response := pbinit.NewQMSUpdateListResponse()
 
+	if request.GetUser() == nil {
+		response.Error = errors.NatsError(ctx, errors.ErrInvalidRequestBody)
+		return response
+	}
+
 	username, err := a.FixUsername(request.User.Username)
 	if err != nil {
 		response.Error = errors.NatsError(ctx, err)
@@ -161,7 +173,7 @@ func (a *App) getUserUpdates(ctx context.Context, request *qms.UpdateListRequest
 		return response
 	}
 
-	response.Updates = []*qms.Update{}
+	response.Updates = make([]*qms.Update, 0, len(mUpdates))
 	for _, mu := range mUpdates {
 		response.Updates = append(response.Updates, &qms.Update{
 			Uuid:          mu.ID,

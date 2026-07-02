@@ -36,7 +36,7 @@ func (a *App) getUsages(ctx context.Context, request *qms.GetUsages) *qms.UsageL
 		return response
 	}
 
-	response.Usages = []*qms.Usage{}
+	response.Usages = make([]*qms.Usage, 0, len(usages))
 	for _, usage := range usages {
 		response.Usages = append(response.Usages, &qms.Usage{
 			Uuid:           usage.ID,

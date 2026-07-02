@@ -70,8 +70,6 @@ func main() {
 	shutdown := otelutils.TracerProviderFromEnv(tracerCtx, serviceName, func(e error) { log.Fatal(e) })
 	defer shutdown()
 
-	//nolint:staticcheck
-
 	config, err = cfg.Init(&cfg.Settings{
 		EnvPrefix:   *envPrefix,
 		ConfigPath:  *configPath,

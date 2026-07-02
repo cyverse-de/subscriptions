@@ -122,7 +122,7 @@ func (a *App) listAddons(ctx context.Context) *qms.AddonListResponse {
 		return response
 	}
 
-	response.Addons = []*qms.Addon{}
+	response.Addons = make([]*qms.Addon, 0, len(results))
 	for _, addon := range results {
 		response.Addons = append(response.Addons, addon.ToQMSType())
 	}
@@ -267,7 +267,8 @@ func (a *App) deleteAddon(ctx context.Context, request *requests.ByUUID) *qms.Ad
 	}
 
 	response.Addon = &qms.Addon{
-		Uuid: request.Uuid,
+		Uuid:       request.Uuid,
+		AddonRates: []*qms.AddonRate{},
 	}
 
 	return response
@@ -324,7 +325,7 @@ func (a *App) listSubscriptionAddons(ctx context.Context, request *requests.ByUU
 			return err
 		}
 
-		response.SubscriptionAddons = []*qms.SubscriptionAddon{}
+		response.SubscriptionAddons = make([]*qms.SubscriptionAddon, 0, len(results))
 		for _, addon := range results {
 			response.SubscriptionAddons = append(response.SubscriptionAddons, addon.ToQMSType())
 		}
