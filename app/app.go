@@ -8,6 +8,7 @@ import (
 
 	"github.com/cyverse-de/go-mod/logging"
 	"github.com/cyverse-de/go-mod/pbinit"
+	"github.com/cyverse-de/p/go/ptypes"
 	"github.com/cyverse-de/p/go/qms"
 	"github.com/cyverse-de/subscriptions/common"
 	"github.com/cyverse-de/subscriptions/db"
@@ -17,7 +18,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var log = logging.Log.WithFields(logrus.Fields{"package": "apps"})
@@ -98,6 +98,13 @@ func (a *App) FixUsername(username string) (string, error) {
 }
 
 func (a *App) validateUpdate(request *qms.AddUpdateRequest) (string, error) {
+	// The lax JSON decoder accepts requests missing nested objects, so guard
+	// before dereferencing; the old protojson codec never produced these.
+	if request.GetUpdate() == nil || request.GetUpdate().GetUser() == nil ||
+		request.GetUpdate().GetResourceType() == nil || request.GetUpdate().GetOperation() == nil {
+		return "", errors.ErrInvalidRequestBody
+	}
+
 	username, err := a.FixUsername(request.Update.User.Username)
 	if err != nil {
 		return "", err
@@ -145,6 +152,11 @@ func (a *App) GreetingHTTPHandler(ctx echo.Context) error {
 func (a *App) getUserUpdates(ctx context.Context, request *qms.UpdateListRequest) *qms.UpdateListResponse {
 	response := pbinit.NewQMSUpdateListResponse()
 
+	if request.GetUser() == nil {
+		response.Error = errors.NatsError(ctx, errors.ErrInvalidRequestBody)
+		return response
+	}
+
 	username, err := a.FixUsername(request.User.Username)
 	if err != nil {
 		response.Error = errors.NatsError(ctx, err)
@@ -161,10 +173,11 @@ func (a *App) getUserUpdates(ctx context.Context, request *qms.UpdateListRequest
 		return response
 	}
 
+	response.Updates = make([]*qms.Update, 0, len(mUpdates))
 	for _, mu := range mUpdates {
 		response.Updates = append(response.Updates, &qms.Update{
 			Uuid:          mu.ID,
-			EffectiveDate: timestamppb.New(mu.EffectiveDate),
+			EffectiveDate: ptypes.New(mu.EffectiveDate),
 			ValueType:     mu.ValueType,
 			Value:         mu.Value,
 			ResourceType: &qms.ResourceType{
@@ -370,7 +383,7 @@ func (a *App) addUserUpdate(ctx context.Context, request *qms.AddUpdateRequest) 
 				Unit:       recordedUpdate.ResourceType.Unit,
 				Consumable: recordedUpdate.ResourceType.Consumable,
 			},
-			EffectiveDate: timestamppb.New(recordedUpdate.EffectiveDate),
+			EffectiveDate: ptypes.New(recordedUpdate.EffectiveDate),
 			Operation: &qms.UpdateOperation{
 				Uuid: recordedUpdate.UpdateOperation.ID,
 				Name: recordedUpdate.UpdateOperation.Name,

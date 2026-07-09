@@ -23,6 +23,7 @@ var (
 	ErrAddonNotFound           = errors.New("add-on not found")
 	ErrSubAddonNotFound        = errors.New("subscription add-on not found")
 	ErrSubscriptionAddonsExist = errors.New("subscription add-ons exist")
+	ErrInvalidRequestBody      = errors.New("required fields are missing from the request body")
 )
 
 func New(s string) error {
@@ -50,6 +51,8 @@ func HTTPStatusCode(err error) int {
 	case ErrInvalidValue:
 		return http.StatusBadRequest
 	case ErrInvalidEffectiveDate:
+		return http.StatusBadRequest
+	case ErrInvalidRequestBody:
 		return http.StatusBadRequest
 	case ErrAddonNotFound:
 		return http.StatusNotFound
@@ -87,6 +90,8 @@ func NatsStatusCode(err error) svcerror.ErrorCode {
 	case ErrInvalidValue:
 		return svcerror.ErrorCode_BAD_REQUEST
 	case ErrInvalidEffectiveDate:
+		return svcerror.ErrorCode_BAD_REQUEST
+	case ErrInvalidRequestBody:
 		return svcerror.ErrorCode_BAD_REQUEST
 	case ErrSubscriptionAddonsExist:
 		return svcerror.ErrorCode_BAD_REQUEST

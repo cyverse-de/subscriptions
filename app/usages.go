@@ -5,12 +5,12 @@ import (
 	"net/http"
 
 	"github.com/cyverse-de/go-mod/pbinit"
+	"github.com/cyverse-de/p/go/ptypes"
 	"github.com/cyverse-de/p/go/qms"
 	"github.com/cyverse-de/subscriptions/db"
 	"github.com/cyverse-de/subscriptions/errors"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func (a *App) getUsages(ctx context.Context, request *qms.GetUsages) *qms.UsageList {
@@ -36,6 +36,7 @@ func (a *App) getUsages(ctx context.Context, request *qms.GetUsages) *qms.UsageL
 		return response
 	}
 
+	response.Usages = make([]*qms.Usage, 0, len(usages))
 	for _, usage := range usages {
 		response.Usages = append(response.Usages, &qms.Usage{
 			Uuid:           usage.ID,
@@ -47,10 +48,10 @@ func (a *App) getUsages(ctx context.Context, request *qms.GetUsages) *qms.UsageL
 				Unit:       usage.ResourceType.Unit,
 				Consumable: usage.ResourceType.Consumable,
 			},
-			CreatedAt:      timestamppb.New(usage.CreatedAt),
+			CreatedAt:      ptypes.New(usage.CreatedAt),
 			CreatedBy:      usage.CreatedBy,
 			LastModifiedBy: usage.LastModifiedBy,
-			LastModifiedAt: timestamppb.New(usage.LastModifiedAt),
+			LastModifiedAt: ptypes.New(usage.LastModifiedAt),
 		})
 	}
 

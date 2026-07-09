@@ -93,7 +93,7 @@ func NewConnection(settings *ConnectionSettings) (*nats.EncodedConn, error) {
 		return nil, err
 	}
 
-	encConn, err := nats.NewEncodedConn(nc, "protojson")
+	encConn, err := nats.NewEncodedConn(nc, nats.JSON_ENCODER)
 	if err != nil {
 		return nil, err
 	}

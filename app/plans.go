@@ -190,9 +190,9 @@ func (a *App) getPlan(ctx context.Context, request *qms.PlanRequest) *qms.PlanRe
 				Uuid:       q.ID,
 				QuotaValue: q.QuotaValue,
 				ResourceType: &qms.ResourceType{
-					Uuid: q.ResourceType.ID,
-					Name: q.ResourceType.Name,
-					Unit: q.ResourceType.Unit,
+					Uuid:       q.ResourceType.ID,
+					Name:       q.ResourceType.Name,
+					Unit:       q.ResourceType.Unit,
 					Consumable: q.ResourceType.Consumable,
 				},
 			})

@@ -14,7 +14,6 @@ import (
 	"github.com/cyverse-de/go-mod/gotelnats"
 	"github.com/cyverse-de/go-mod/logging"
 	"github.com/cyverse-de/go-mod/otelutils"
-	"github.com/cyverse-de/go-mod/protobufjson"
 	qmssubs "github.com/cyverse-de/go-mod/subjects/qms"
 	"github.com/cyverse-de/subscriptions/app"
 	"github.com/cyverse-de/subscriptions/natscl"
@@ -70,9 +69,6 @@ func main() {
 	defer cancel()
 	shutdown := otelutils.TracerProviderFromEnv(tracerCtx, serviceName, func(e error) { log.Fatal(e) })
 	defer shutdown()
-
-	//nolint:staticcheck
-	nats.RegisterEncoder("protojson", protobufjson.NewCodec(protobufjson.WithEmitUnpopulated()))
 
 	config, err = cfg.Init(&cfg.Settings{
 		EnvPrefix:   *envPrefix,
