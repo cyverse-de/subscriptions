@@ -32,9 +32,11 @@ func (a *App) addAddon(ctx context.Context, request *qms.AddAddonRequest) *qms.A
 	requestedAddon := db.NewAddonFromQMS(request.Addon)
 	if err := requestedAddon.Validate(); err != nil {
 		response.Error = serrors.NatsError(ctx, err)
+		return response
 	}
 	if err := requestedAddon.ValidateAddonRateUniqueness(); err != nil {
 		response.Error = serrors.NatsError(ctx, err)
+		return response
 	}
 
 	// Start a transaction.
