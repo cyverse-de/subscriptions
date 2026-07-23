@@ -100,10 +100,15 @@ func NatsStatusCode(err error) svcerror.ErrorCode {
 	}
 }
 
+// NatsError builds a *svcerror.ServiceError for err. It sets both the NATS
+// ErrorCode (for message consumers) and the HTTP StatusCode, so the HTTP
+// handlers that report status via response.Error.StatusCode return a valid
+// code instead of 0.
 func NatsError(ctx context.Context, err error) *svcerror.ServiceError {
 	return gotelnats.InitServiceError(
 		ctx, err, &gotelnats.ErrorOptions{
-			ErrorCode: NatsStatusCode(err),
+			ErrorCode:  NatsStatusCode(err),
+			StatusCode: int32(HTTPStatusCode(err)),
 		},
 	)
 }
