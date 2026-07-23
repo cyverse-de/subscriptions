@@ -30,7 +30,29 @@ func New(s string) error {
 	return errors.New(s)
 }
 
+// ValidationError marks an error as caused by invalid client input. It maps to
+// an HTTP 400 / NATS BAD_REQUEST regardless of the wrapped error's message.
+type ValidationError struct{ err error }
+
+func (e *ValidationError) Error() string { return e.err.Error() }
+
+func (e *ValidationError) Unwrap() error { return e.err }
+
+// AsBadRequest wraps err as a ValidationError so it is reported as a bad
+// request. It returns nil when err is nil.
+func AsBadRequest(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ValidationError{err: err}
+}
+
 func HTTPStatusCode(err error) int {
+	var ve *ValidationError
+	if errors.As(err, &ve) {
+		return http.StatusBadRequest
+	}
+
 	switch err {
 	case ErrUserNotFound:
 		return http.StatusNotFound
@@ -66,6 +88,11 @@ func HTTPStatusCode(err error) int {
 }
 
 func NatsStatusCode(err error) svcerror.ErrorCode {
+	var ve *ValidationError
+	if errors.As(err, &ve) {
+		return svcerror.ErrorCode_BAD_REQUEST
+	}
+
 	switch err {
 	case ErrUserNotFound:
 		return svcerror.ErrorCode_NOT_FOUND
@@ -100,10 +127,15 @@ func NatsStatusCode(err error) svcerror.ErrorCode {
 	}
 }
 
+// NatsError builds a *svcerror.ServiceError for err. It sets both the NATS
+// ErrorCode (for message consumers) and the HTTP StatusCode, so the HTTP
+// handlers that report status via response.Error.StatusCode return a valid
+// code instead of 0.
 func NatsError(ctx context.Context, err error) *svcerror.ServiceError {
 	return gotelnats.InitServiceError(
 		ctx, err, &gotelnats.ErrorOptions{
-			ErrorCode: NatsStatusCode(err),
+			ErrorCode:  NatsStatusCode(err),
+			StatusCode: int32(HTTPStatusCode(err)),
 		},
 	)
 }

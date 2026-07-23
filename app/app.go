@@ -16,6 +16,7 @@ import (
 	"github.com/cyverse-de/subscriptions/natscl"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 )
@@ -38,6 +39,11 @@ func New(client *natscl.Client, db *sqlx.DB, userSuffix string) *App {
 		Router:         echo.New(),
 		ReportOverages: true,
 	}
+
+	// Recover from handler panics so a bug (e.g. a nil deref on a malformed
+	// body) returns a 500 through the error handler instead of dropping the
+	// connection.
+	app.Router.Use(middleware.Recover())
 
 	app.Router.HTTPErrorHandler = func(err error, c echo.Context) {
 		code := http.StatusInternalServerError

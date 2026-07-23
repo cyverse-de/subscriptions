@@ -21,13 +21,22 @@ func (a *App) addAddon(ctx context.Context, request *qms.AddAddonRequest) *qms.A
 	d := db.New(a.db)
 	response := qmsinit.NewAddonResponse()
 
+	// The lax JSON decoder accepts a request with no addon object; guard before
+	// dereferencing it.
+	if request.Addon == nil {
+		response.Error = serrors.NatsError(ctx, serrors.ErrInvalidRequestBody)
+		return response
+	}
+
 	// Validate the incoming request.
 	requestedAddon := db.NewAddonFromQMS(request.Addon)
 	if err := requestedAddon.Validate(); err != nil {
-		response.Error = serrors.NatsError(ctx, err)
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(err))
+		return response
 	}
 	if err := requestedAddon.ValidateAddonRateUniqueness(); err != nil {
-		response.Error = serrors.NatsError(ctx, err)
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(err))
+		return response
 	}
 
 	// Start a transaction.
@@ -168,8 +177,15 @@ func (a *App) updateAddon(ctx context.Context, request *qms.UpdateAddonRequest) 
 	response := qmsinit.NewAddonResponse()
 	d := db.New(a.db)
 
+	// The lax JSON decoder accepts a request with no addon object; guard before
+	// dereferencing it.
+	if request.Addon == nil {
+		response.Error = serrors.NatsError(ctx, serrors.ErrInvalidRequestBody)
+		return response
+	}
+
 	if request.Addon.Uuid == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("uuid must be set in the request"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("uuid must be set in the request")))
 		return response
 	}
 
@@ -230,6 +246,12 @@ func (a *App) UpdateAddonHTTPHandler(c echo.Context) error {
 	if err = c.Bind(&request); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"message": "bad request",
+		})
+	}
+
+	if request.Addon == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"message": "request body must include an addon",
 		})
 	}
 
@@ -433,13 +455,13 @@ func (a *App) addSubscriptionAddon(ctx context.Context, request *requests.Associ
 
 	subscriptionID := request.ParentUuid
 	if subscriptionID == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("parent_uuid must be set to the subscription UUID"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("parent_uuid must be set to the subscription UUID")))
 		return response
 	}
 
 	addonID := request.ChildUuid
 	if addonID == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("child_id must be set to the add-on UUID"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("child_id must be set to the add-on UUID")))
 		return response
 	}
 
@@ -533,7 +555,7 @@ func (a *App) deleteSubscriptionAddon(ctx context.Context, request *requests.ByU
 	// Get the subscription add-on ID out of the request.
 	subAddonID := request.Uuid
 	if subAddonID == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("subscription addon-on UUID must be set"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("subscription addon-on UUID must be set")))
 		return response
 	}
 
@@ -641,8 +663,15 @@ func (a *App) updateSubscriptionAddon(ctx context.Context, request *qms.UpdateSu
 
 	d := db.New(a.db)
 
+	// The lax JSON decoder accepts a request with no subscription_addon object;
+	// guard before dereferencing it.
+	if request.SubscriptionAddon == nil {
+		response.Error = serrors.NatsError(ctx, serrors.ErrInvalidRequestBody)
+		return response
+	}
+
 	if request.SubscriptionAddon.Uuid == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("uuid must be set in the request"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("uuid must be set in the request")))
 		return response
 	}
 
