@@ -31,11 +31,11 @@ func (a *App) addAddon(ctx context.Context, request *qms.AddAddonRequest) *qms.A
 	// Validate the incoming request.
 	requestedAddon := db.NewAddonFromQMS(request.Addon)
 	if err := requestedAddon.Validate(); err != nil {
-		response.Error = serrors.NatsError(ctx, err)
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(err))
 		return response
 	}
 	if err := requestedAddon.ValidateAddonRateUniqueness(); err != nil {
-		response.Error = serrors.NatsError(ctx, err)
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(err))
 		return response
 	}
 
@@ -185,7 +185,7 @@ func (a *App) updateAddon(ctx context.Context, request *qms.UpdateAddonRequest) 
 	}
 
 	if request.Addon.Uuid == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("uuid must be set in the request"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("uuid must be set in the request")))
 		return response
 	}
 
@@ -455,13 +455,13 @@ func (a *App) addSubscriptionAddon(ctx context.Context, request *requests.Associ
 
 	subscriptionID := request.ParentUuid
 	if subscriptionID == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("parent_uuid must be set to the subscription UUID"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("parent_uuid must be set to the subscription UUID")))
 		return response
 	}
 
 	addonID := request.ChildUuid
 	if addonID == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("child_id must be set to the add-on UUID"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("child_id must be set to the add-on UUID")))
 		return response
 	}
 
@@ -555,7 +555,7 @@ func (a *App) deleteSubscriptionAddon(ctx context.Context, request *requests.ByU
 	// Get the subscription add-on ID out of the request.
 	subAddonID := request.Uuid
 	if subAddonID == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("subscription addon-on UUID must be set"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("subscription addon-on UUID must be set")))
 		return response
 	}
 
@@ -671,7 +671,7 @@ func (a *App) updateSubscriptionAddon(ctx context.Context, request *qms.UpdateSu
 	}
 
 	if request.SubscriptionAddon.Uuid == "" {
-		response.Error = serrors.NatsError(ctx, errors.New("uuid must be set in the request"))
+		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("uuid must be set in the request")))
 		return response
 	}
 

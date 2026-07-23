@@ -23,6 +23,7 @@ func TestNatsErrorPopulatesStatusCode(t *testing.T) {
 		{"invalid request body", ErrInvalidRequestBody, http.StatusBadRequest, svcerror.ErrorCode_BAD_REQUEST},
 		{"subscription addons exist", ErrSubscriptionAddonsExist, http.StatusConflict, svcerror.ErrorCode_BAD_REQUEST},
 		{"unclassified error", New("boom"), http.StatusInternalServerError, svcerror.ErrorCode_INTERNAL},
+		{"wrapped validation error", AsBadRequest(New("bad field")), http.StatusBadRequest, svcerror.ErrorCode_BAD_REQUEST},
 	}
 
 	for _, tt := range tests {

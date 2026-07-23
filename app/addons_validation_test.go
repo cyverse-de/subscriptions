@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -30,5 +31,9 @@ func TestAddAddonReturnsOnValidationFailure(t *testing.T) {
 	}
 	if !strings.Contains(response.Error.Message, "name must be set") {
 		t.Errorf("error message = %q, want it to report the validation failure", response.Error.Message)
+	}
+	if response.Error.StatusCode != http.StatusBadRequest {
+		t.Errorf("StatusCode = %d, want %d (a validation failure is a bad request)",
+			response.Error.StatusCode, http.StatusBadRequest)
 	}
 }
