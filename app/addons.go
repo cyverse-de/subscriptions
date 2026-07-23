@@ -21,6 +21,13 @@ func (a *App) addAddon(ctx context.Context, request *qms.AddAddonRequest) *qms.A
 	d := db.New(a.db)
 	response := qmsinit.NewAddonResponse()
 
+	// The lax JSON decoder accepts a request with no addon object; guard before
+	// dereferencing it.
+	if request.Addon == nil {
+		response.Error = serrors.NatsError(ctx, serrors.ErrInvalidRequestBody)
+		return response
+	}
+
 	// Validate the incoming request.
 	requestedAddon := db.NewAddonFromQMS(request.Addon)
 	if err := requestedAddon.Validate(); err != nil {
