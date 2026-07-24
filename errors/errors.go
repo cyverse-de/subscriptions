@@ -32,7 +32,7 @@ func New(s string) error {
 }
 
 // ValidationError marks an error as caused by invalid client input. It maps to
-// an HTTP 400 / NATS BAD_REQUEST regardless of the wrapped error's message.
+// an HTTP 400 / ErrorCode_BAD_REQUEST regardless of the wrapped error's message.
 type ValidationError struct{ err error }
 
 func (e *ValidationError) Error() string { return e.err.Error() }
