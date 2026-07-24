@@ -93,7 +93,7 @@ func main() {
 	dbconn.SetMaxOpenConns(10)
 	dbconn.SetConnMaxIdleTime(time.Minute)
 
-	a := app.New(dbconn, userSuffix)
+	a := app.New(dbconn, userSuffix, *reportOverages)
 
 	srv := fmt.Sprintf(":%s", strconv.Itoa(*listenPort))
 	log.Fatal(http.ListenAndServe(srv, a.Router))

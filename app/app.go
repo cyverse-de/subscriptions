@@ -29,12 +29,12 @@ type App struct {
 	ReportOverages bool
 }
 
-func New(db *sqlx.DB, userSuffix string) *App {
+func New(db *sqlx.DB, userSuffix string, reportOverages bool) *App {
 	app := &App{
 		db:             db,
 		userSuffix:     userSuffix,
 		Router:         echo.New(),
-		ReportOverages: true,
+		ReportOverages: reportOverages,
 	}
 
 	// Recover from handler panics so a bug (e.g. a nil deref on a malformed
