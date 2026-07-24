@@ -51,25 +51,6 @@ func (a *App) getUserOverages(ctx context.Context, request *qms.AllUserOveragesR
 	return response
 }
 
-func (a *App) GetUserOverages(subject, reply string, request *qms.AllUserOveragesRequest) {
-	var err error
-
-	log := log.WithFields(logrus.Fields{"context": "list overages"})
-
-	ctx, span := pbinit.InitAllUserOveragesRequest(request, subject)
-	defer span.End()
-
-	response := a.getUserOverages(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) GetUserOveragesHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -120,25 +101,6 @@ func (a *App) checkUserOverages(ctx context.Context, request *qms.IsOverageReque
 	}
 
 	return response
-}
-
-func (a *App) CheckUserOverages(subject, reply string, request *qms.IsOverageRequest) {
-	var err error
-
-	log := log.WithFields(logrus.Fields{"context": "check if in overage"})
-
-	ctx, span := pbinit.InitIsOverageRequest(request, subject)
-	defer span.End()
-
-	response := a.checkUserOverages(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) CheckUserOveragesHTTPHandler(c echo.Context) error {

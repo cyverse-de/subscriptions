@@ -10,7 +10,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	qmsinit "github.com/cyverse-de/go-mod/pbinit/qms"
-	reqinit "github.com/cyverse-de/go-mod/pbinit/requests"
 	"github.com/cyverse-de/p/go/qms"
 	"github.com/cyverse-de/p/go/requests"
 	"github.com/cyverse-de/subscriptions/db"
@@ -78,25 +77,6 @@ func (a *App) addAddon(ctx context.Context, request *qms.AddAddonRequest) *qms.A
 	return response
 }
 
-func (a *App) AddAddonHandler(subject, reply string, request *qms.AddAddonRequest) {
-	var err error
-
-	ctx, span := qmsinit.InitAddAddonRequest(request, subject)
-	defer span.End()
-
-	log := log.WithField("context", "adding new available addon")
-
-	response := a.addAddon(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) AddAddonHTTPHandler(c echo.Context) error {
 	var (
 		err     error
@@ -136,28 +116,6 @@ func (a *App) listAddons(ctx context.Context) *qms.AddonListResponse {
 		response.Addons = append(response.Addons, addon.ToQMSType())
 	}
 	return response
-}
-
-// ListAddonsHandler lists all of the available add-ons in the system. These are
-// the ones that can be applied to a subscription, not the ones that have been
-// applied already.
-func (a *App) ListAddonsHandler(subject, reply string, request *qms.NoParamsRequest) {
-	var err error
-
-	ctx, span := qmsinit.InitNoParamsRequest(request, subject)
-	defer span.End()
-
-	log := log.WithField("context", "list addons")
-
-	response := a.listAddons(ctx)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) ListAddonsHTTPHandler(c echo.Context) error {
@@ -214,25 +172,6 @@ func (a *App) updateAddon(ctx context.Context, request *qms.UpdateAddonRequest) 
 		response.Error = serrors.NatsError(ctx, err)
 	}
 	return response
-}
-
-func (a *App) UpdateAddonHandler(subject, reply string, request *qms.UpdateAddonRequest) {
-	var err error
-
-	log := log.WithField("context", "update addon")
-
-	ctx, span := qmsinit.InitUpdateAddonRequest(request, subject)
-	defer span.End()
-
-	response := a.updateAddon(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) UpdateAddonHTTPHandler(c echo.Context) error {
@@ -296,25 +235,6 @@ func (a *App) deleteAddon(ctx context.Context, request *requests.ByUUID) *qms.Ad
 	return response
 }
 
-func (a *App) DeleteAddonHandler(subject, reply string, request *requests.ByUUID) {
-	var err error
-
-	log := log.WithField("context", "delete addon")
-
-	ctx, span := reqinit.InitByUUID(request, subject)
-	defer span.End()
-
-	response := a.deleteAddon(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) DeleteAddonHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -361,26 +281,6 @@ func (a *App) listSubscriptionAddons(ctx context.Context, request *requests.ByUU
 	return response
 }
 
-// ListSubscriptionAddonsHandler lists the add-ons that have been applied to the
-// indicated subscription.
-func (a *App) ListSubscriptionAddonsHandler(subject, reply string, request *requests.ByUUID) {
-	var err error
-
-	ctx, span := reqinit.InitByUUID(request, subject)
-	defer span.End()
-
-	log := log.WithField("context", "listing subscription add-ons")
-
-	response := a.listSubscriptionAddons(ctx, request)
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) ListSubscriptionAddonsHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -411,26 +311,6 @@ func (a *App) getSubscriptionAddon(ctx context.Context, request *requests.ByUUID
 	response.SubscriptionAddon = subAddon.ToQMSType()
 
 	return response
-}
-
-// GetSubscriptionAddonHandler gets a single addon based on it's UUID.
-func (a *App) GetSubscriptionAddonHandler(subject, reply string, request *requests.ByUUID) {
-	var err error
-
-	ctx, span := reqinit.InitByUUID(request, subject)
-	defer span.End()
-
-	log := log.WithField("context", "getting subscription add-on")
-
-	response := a.getSubscriptionAddon(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) GetSubscriptionAddonHTTPHandler(c echo.Context) error {
@@ -510,25 +390,6 @@ func (a *App) addSubscriptionAddon(ctx context.Context, request *requests.Associ
 
 	response.SubscriptionAddon = subAddon.ToQMSType()
 	return response
-}
-
-func (a *App) AddSubscriptionAddonHandler(subject, reply string, request *requests.AssociateByUUIDs) {
-	var err error
-
-	ctx, span := reqinit.InitAssociateByUUIDs(request, subject)
-	defer span.End()
-
-	log := log.WithField("context", "adding subscription add-on")
-
-	response := a.addSubscriptionAddon(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) AddSubscriptionAddonHTTPHandler(c echo.Context) error {
@@ -621,25 +482,6 @@ func (a *App) deleteSubscriptionAddon(ctx context.Context, request *requests.ByU
 	response.SubscriptionAddon = subAddon.ToQMSType()
 
 	return response
-}
-
-func (a *App) DeleteSubscriptionAddonHandler(subject, reply string, request *requests.ByUUID) {
-	var err error
-
-	ctx, span := reqinit.InitByUUID(request, subject)
-	defer span.End()
-
-	log := log.WithField("context", "deleting subscription add-ons")
-
-	response := a.deleteSubscriptionAddon(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) DeleteSubscriptionAddonHTTPHandler(c echo.Context) error {
@@ -743,25 +585,6 @@ func (a *App) updateSubscriptionAddon(ctx context.Context, request *qms.UpdateSu
 	response.SubscriptionAddon = result.ToQMSType()
 
 	return response
-}
-
-func (a *App) UpdateSubscriptionAddonHandler(subject, reply string, request *qms.UpdateSubscriptionAddonRequest) {
-	var err error
-
-	ctx, span := qmsinit.InitUpdateSubscriptionAddonRequest(request, subject)
-	defer span.End()
-
-	log := log.WithField("context", "update subscription addon")
-
-	response := a.updateSubscriptionAddon(ctx, request)
-
-	if response.Error != nil {
-		log.Debug(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) UpdateSubscriptionAddonHTTPHandler(c echo.Context) error {

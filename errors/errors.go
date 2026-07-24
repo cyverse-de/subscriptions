@@ -4,9 +4,10 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/cyverse-de/go-mod/gotelnats"
 	"github.com/cyverse-de/p/go/svcerror"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -31,7 +32,7 @@ func New(s string) error {
 }
 
 // ValidationError marks an error as caused by invalid client input. It maps to
-// an HTTP 400 / NATS BAD_REQUEST regardless of the wrapped error's message.
+// an HTTP 400 / ErrorCode_BAD_REQUEST regardless of the wrapped error's message.
 type ValidationError struct{ err error }
 
 func (e *ValidationError) Error() string { return e.err.Error() }
@@ -127,15 +128,21 @@ func NatsStatusCode(err error) svcerror.ErrorCode {
 	}
 }
 
-// NatsError builds a *svcerror.ServiceError for err. It sets both the NATS
-// ErrorCode (for message consumers) and the HTTP StatusCode, so the HTTP
+// NatsError builds a *svcerror.ServiceError for err and records it on the
+// context's span. It sets both the ErrorCode and the HTTP StatusCode, so the
 // handlers that report status via response.Error.StatusCode return a valid
 // code instead of 0.
+//
+// The name predates the removal of this service's NATS transport; the error
+// envelope it builds is still what the HTTP responses carry.
 func NatsError(ctx context.Context, err error) *svcerror.ServiceError {
-	return gotelnats.InitServiceError(
-		ctx, err, &gotelnats.ErrorOptions{
-			ErrorCode:  NatsStatusCode(err),
-			StatusCode: int32(HTTPStatusCode(err)),
-		},
-	)
+	span := trace.SpanFromContext(ctx)
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+
+	return &svcerror.ServiceError{
+		ErrorCode:  NatsStatusCode(err),
+		StatusCode: int32(HTTPStatusCode(err)),
+		Message:    err.Error(),
+	}
 }

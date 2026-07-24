@@ -10,7 +10,6 @@ import (
 	"github.com/cyverse-de/subscriptions/db"
 	"github.com/cyverse-de/subscriptions/errors"
 	"github.com/labstack/echo/v4"
-	"github.com/sirupsen/logrus"
 )
 
 func (a *App) getUsages(ctx context.Context, request *qms.GetUsages) *qms.UsageList {
@@ -56,25 +55,6 @@ func (a *App) getUsages(ctx context.Context, request *qms.GetUsages) *qms.UsageL
 	}
 
 	return response
-}
-
-func (a *App) GetUsagesHandler(subject, reply string, request *qms.GetUsages) {
-	var err error
-
-	log := log.WithFields(logrus.Fields{"context": "getting usages"})
-
-	ctx, span := pbinit.InitGetUsages(request, subject)
-	defer span.End()
-
-	response := a.getUsages(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) GetUsagesHTTPHandler(c echo.Context) error {
@@ -170,23 +150,6 @@ func (a *App) addUsage(ctx context.Context, request *qms.AddUsage) *qms.UsageRes
 	}
 
 	return response
-}
-
-func (a *App) AddUsageHandler(subject, reply string, request *qms.AddUsage) {
-	var err error
-
-	ctx, span := pbinit.InitAddUsage(request, subject)
-	defer span.End()
-
-	response := a.addUsage(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) AddUsageHTTPHandler(c echo.Context) error {

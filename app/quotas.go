@@ -62,25 +62,6 @@ func (a *App) addQuota(ctx context.Context, request *qms.AddQuotaRequest) *qms.Q
 	return response
 }
 
-func (a *App) AddQuotaHandler(subject, reply string, request *qms.AddQuotaRequest) {
-	var err error
-
-	log := log.WithField("context", "add quota")
-
-	ctx, span := pbinit.InitQMSAddQuotaRequest(request, subject)
-	defer span.End()
-
-	response := a.addQuota(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) AddQuotaHTTPHandler(c echo.Context) error {
 	var (
 		err     error
