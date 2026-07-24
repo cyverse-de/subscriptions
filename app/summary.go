@@ -108,21 +108,6 @@ func (a *App) getUserSummary(ctx context.Context, request *qms.RequestByUsername
 	return response
 }
 
-func (a *App) GetUserSummaryHandler(subject, reply string, request *qms.RequestByUsername) {
-	var err error
-
-	log := log.WithFields(logrus.Fields{"context": "user summary"})
-
-	ctx, span := pbinit.InitQMSRequestByUsername(request, subject)
-	defer span.End()
-
-	response := a.getUserSummary(ctx, request)
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) GetUserSummaryHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 

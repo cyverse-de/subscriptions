@@ -125,25 +125,6 @@ func (a *App) addUser(ctx context.Context, request *qms.AddUserRequest) *qms.Add
 	return response
 }
 
-func (a *App) AddUserHandler(subject, reply string, request *qms.AddUserRequest) {
-	var err error
-
-	log := log.WithField("context", "add user")
-
-	ctx, span := pbinit.InitQMSAddUserRequest(request, subject)
-	defer span.End()
-
-	response := a.addUser(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) AddUserHTTPHandler(c echo.Context) error {
 	var (
 		err     error

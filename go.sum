@@ -50,8 +50,6 @@ github.com/cyverse-de/go-mod/otelutils v0.0.5 h1:PpVRfMO/zlzHMOTU6bzVQYvgUTjtCux
 github.com/cyverse-de/go-mod/otelutils v0.0.5/go.mod h1:ImgwzJFUE3EObZGtbsxCbEXVQCk43IP7Q2qs1H847PU=
 github.com/cyverse-de/go-mod/pbinit v0.2.0 h1:BizSciZBF0z+dBpEY+edJ5gqc3Eouk2Zenr20SZBads=
 github.com/cyverse-de/go-mod/pbinit v0.2.0/go.mod h1:wqHnpsaFimTX8cQKeZFmTJGy5JtpGLRudJucnx/R5rs=
-github.com/cyverse-de/go-mod/subjects v0.1.5 h1:wuThkSyC+XbngIAHVD3+WecSz7ytGRyQBzEBzzr0agU=
-github.com/cyverse-de/go-mod/subjects v0.1.5/go.mod h1:XjBoa1k2CovbxjNqQFP69eiXEstiV4bqxZWSBLizGjA=
 github.com/cyverse-de/p/go/analysis v0.1.0 h1:lGZn4gWdh6/OLnn1jf55vAdzXgtmRaOQ+UZwacW6wG4=
 github.com/cyverse-de/p/go/analysis v0.1.0/go.mod h1:sxj3aaM3a6xkKp7UHh+/v5ItRMRkm3OMMiUUS9oEUgQ=
 github.com/cyverse-de/p/go/apps v0.1.0 h1:jn/dZm1XcZ1FZIuwANB0AgZamuTGfYKxlNBxQZ0htSo=

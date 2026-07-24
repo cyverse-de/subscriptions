@@ -13,7 +13,6 @@ import (
 	"github.com/cyverse-de/subscriptions/common"
 	"github.com/cyverse-de/subscriptions/db"
 	"github.com/cyverse-de/subscriptions/errors"
-	"github.com/cyverse-de/subscriptions/natscl"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -24,16 +23,14 @@ import (
 var log = logging.Log.WithFields(logrus.Fields{"package": "apps"})
 
 type App struct {
-	client         *natscl.Client
 	db             *sqlx.DB
 	Router         *echo.Echo
 	userSuffix     string
 	ReportOverages bool
 }
 
-func New(client *natscl.Client, db *sqlx.DB, userSuffix string) *App {
+func New(db *sqlx.DB, userSuffix string) *App {
 	app := &App{
-		client:         client,
 		db:             db,
 		userSuffix:     userSuffix,
 		Router:         echo.New(),
@@ -204,25 +201,6 @@ func (a *App) getUserUpdates(ctx context.Context, request *qms.UpdateListRequest
 	}
 
 	return response
-}
-
-func (a *App) GetUserUpdatesHandler(subject, reply string, request *qms.UpdateListRequest) {
-	var err error
-
-	log := log.WithFields(logrus.Fields{"context": "get all user updates over nats"})
-
-	ctx, span := pbinit.InitQMSUpdateListRequest(request, subject)
-	defer span.End()
-
-	response := a.getUserUpdates(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) GetUserUpdatesHTTPHandler(c echo.Context) error {
@@ -408,27 +386,6 @@ func (a *App) addUserUpdate(ctx context.Context, request *qms.AddUpdateRequest) 
 	return response
 }
 
-func (a *App) AddUserUpdateHandler(subject, reply string, request *qms.AddUpdateRequest) {
-	var err error
-
-	// Initialize the response.
-	log := log.WithFields(logrus.Fields{"context": "add a user update over nats"})
-
-	ctx, span := pbinit.InitQMSAddUpdateRequest(request, subject)
-	defer span.End()
-
-	response := a.addUserUpdate(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	// Send the response to the caller
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) AddUserUpdateHTTPHandler(c echo.Context) error {
 	var (
 		err     error
@@ -443,6 +400,13 @@ func (a *App) AddUserUpdateHTTPHandler(c echo.Context) error {
 		})
 	}
 
+	// The path username is authoritative, but a body missing the nested objects would panic on the
+	// assignment below before validateUpdate ever sees it.
+	if request.GetUpdate() == nil || request.GetUpdate().GetUser() == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"message": errors.ErrInvalidRequestBody.Error(),
+		})
+	}
 	request.Update.User.Username = c.Param("username")
 
 	response := a.addUserUpdate(ctx, &request)

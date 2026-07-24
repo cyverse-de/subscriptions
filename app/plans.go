@@ -30,24 +30,6 @@ func (a *App) listPlans(ctx context.Context) *qms.PlanList {
 	return response
 }
 
-func (a *App) ListPlansHandler(subject, reply string, request *qms.NoParamsRequest) {
-	var err error
-	log := log.WithField("context", "list plans")
-
-	ctx, span := pbinit.InitQMSNoParamsRequest(request, subject)
-	defer span.End()
-
-	response := a.listPlans(ctx)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) ListPlansHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -124,24 +106,6 @@ func (a *App) addPlan(ctx context.Context, request *qms.AddPlanRequest) *qms.Pla
 	return response
 }
 
-func (a *App) AddPlanHandler(subject, reply string, request *qms.AddPlanRequest) {
-	var err error
-	log := log.WithField("context", "list plans")
-
-	ctx, span := pbinit.InitQMSAddPlanRequest(request, subject)
-	defer span.End()
-
-	response := a.addPlan(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) AddPlanHTTPHandler(c echo.Context) error {
 	var (
 		err     error
@@ -201,24 +165,6 @@ func (a *App) getPlan(ctx context.Context, request *qms.PlanRequest) *qms.PlanRe
 	return response
 }
 
-func (a *App) GetPlanHandler(subject, reply string, request *qms.PlanRequest) {
-	var err error
-	log := log.WithField("context", "get plan")
-
-	ctx, span := pbinit.InitQMSPlanRequest(request, subject)
-	defer span.End()
-
-	response := a.getPlan(ctx, request)
-
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
-}
-
 func (a *App) GetPlanHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -239,22 +185,6 @@ func (a *App) upsertQuotaDefault(ctx context.Context, _ *qms.AddPlanQuotaDefault
 	response := pbinit.NewQuotaDefaultResponse()
 	response.Error = errors.NatsError(ctx, fmt.Errorf("not implemented"))
 	return response
-}
-
-func (a *App) UpsertQuotaDefaultsHandler(subject, reply string, request *qms.AddPlanQuotaDefaultRequest) {
-	var err error
-
-	ctx, span := pbinit.InitQMSAddPlanQuotaDefaultRequest(request, subject)
-	defer span.End()
-
-	response := a.upsertQuotaDefault(ctx, request)
-	if response.Error != nil {
-		log.Error(response.Error.Message)
-	}
-
-	if err = a.client.Respond(ctx, reply, response); err != nil {
-		log.Error(err)
-	}
 }
 
 func (a *App) UpsertQuotaDefaultsHTTPHandler(c echo.Context) error {
