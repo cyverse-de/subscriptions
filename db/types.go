@@ -148,7 +148,7 @@ type Subscription struct {
 	CreatedBy          string              `db:"created_by"`
 	CreatedAt          time.Time           `db:"created_at" goqu:"defaultifempty"`
 	LastModifiedBy     string              `db:"last_modified_by"`
-	LastModifiedAt     string              `db:"last_modified_at" goqu:"defaultifempty"`
+	LastModifiedAt     time.Time           `db:"last_modified_at" goqu:"defaultifempty"`
 	Paid               bool                `db:"paid" goqu:"defaultifempty"`
 	Rate               PlanRate            `db:"plan_rates"`
 }
