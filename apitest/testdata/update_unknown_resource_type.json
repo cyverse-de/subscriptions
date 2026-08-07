@@ -1,0 +1,20 @@
+{
+  "error": {
+    "error_code": "BAD_REQUEST",
+    "message": "invalid resource name",
+    "status_code": 400
+  },
+  "header": {
+    "map": {}
+  },
+  "update": {
+    "effective_date": null,
+    "metadata": "",
+    "operation": null,
+    "resource_type": null,
+    "user": null,
+    "uuid": "",
+    "value": 0,
+    "value_type": ""
+  }
+}

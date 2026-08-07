@@ -1,0 +1,26 @@
+{
+  "addon": {
+    "addon_rates": [
+      {
+        "effective_date": "<timestamp>",
+        "rate": 5,
+        "uuid": "<uuid>"
+      }
+    ],
+    "default_amount": 100,
+    "default_paid": false,
+    "description": "an add-on",
+    "name": "Extra CPU",
+    "resource_type": {
+      "consumable": true,
+      "name": "cpu.hours",
+      "unit": "cpu hours",
+      "uuid": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
+    },
+    "uuid": "<uuid>"
+  },
+  "error": null,
+  "header": {
+    "map": {}
+  }
+}
