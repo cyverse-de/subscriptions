@@ -46,25 +46,18 @@ func TestUsageWritesAnUpdatesRow(t *testing.T) {
 		t.Errorf("updates rows = %d, want 2 (one per usage change)", updateCount)
 	}
 
-	// KNOWN BUG, recorded deliberately: both rows say ADD even though the
-	// first update was a SET. The operation is looked up with
-	//
-	//	updateOperation := model.UpdateOperation{Name: usage.UpdateType}
-	//	tx.First(&updateOperation)
-	//
-	// but GORM's First only filters on the primary key, ignoring Name, so it
-	// always returns whichever row sorts first — ADD. The running total in
-	// `usages` is still correct because the SET/ADD arithmetic is a separate
-	// switch; it is only the audit trail that misreports. The same unreachable
-	// lookup is why an invalid update type 500s instead of 400ing.
+	// Each row records the operation that was actually requested. This used to
+	// say ADD for both, because the lookup passed the name on the destination
+	// struct and GORM's First only filters on the primary key -- so it returned
+	// whichever operation sorted first regardless of what was asked for.
 	operations := queryString(t, `
 		SELECT string_agg(o.name, ',' ORDER BY u.effective_date)
 		  FROM updates u
 		  JOIN users ON u.user_id = users.id
 		  JOIN update_operations o ON u.update_operation_id = o.id
 		 WHERE users.username = $1`, "testuser")
-	if operations != "ADD,ADD" {
-		t.Errorf("recorded operations = %q, want \"ADD,ADD\" (the current, buggy behavior)", operations)
+	if operations != "SET,ADD" {
+		t.Errorf("recorded operations = %q, want \"SET,ADD\"", operations)
 	}
 
 	usage := queryString(t, `

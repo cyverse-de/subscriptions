@@ -31,17 +31,17 @@ var (
 	ErrInvalidUpdateType   = errors.New("invalid update type")
 )
 
+// httpStatusCode maps a sentinel error to a status. It matches with errors.Is
+// rather than equality so that a sentinel can be wrapped with the offending
+// value and still be classified as client input rather than a server fault.
 func httpStatusCode(err error) int {
-	switch err {
-	case ErrUserNotFound:
+	switch {
+	case errors.Is(err, ErrUserNotFound):
 		return http.StatusNotFound
-	case ErrInvalidUsername:
-		return http.StatusBadRequest
-	case ErrInvalidResourceName:
-		return http.StatusBadRequest
-	case ErrInvalidUsageValue:
-		return http.StatusBadRequest
-	case ErrInvalidUpdateType:
+	case errors.Is(err, ErrInvalidUsername),
+		errors.Is(err, ErrInvalidResourceName),
+		errors.Is(err, ErrInvalidUsageValue),
+		errors.Is(err, ErrInvalidUpdateType):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
@@ -95,10 +95,15 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 		log.Debug("found resource type in database")
 
 		// Verify that the update operation for the given update type exists.
-		updateOperation := model.UpdateOperation{Name: usage.UpdateType}
-		err = tx.WithContext(ctx).First(&updateOperation).Error
+		// The name has to be an explicit condition: First only filters on the
+		// primary key, so setting Name on the destination struct matched
+		// whichever operation sorted first and recorded ADD for every update.
+		var updateOperation model.UpdateOperation
+		err = tx.WithContext(ctx).
+			Where("name = ?", usage.UpdateType).
+			First(&updateOperation).Error
 		if err == gorm.ErrRecordNotFound {
-			return errors.New("invalid update type")
+			return fmt.Errorf("%w: %s", ErrInvalidUpdateType, usage.UpdateType)
 		}
 		if err != nil {
 			return err
@@ -115,7 +120,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 		case UpdateTypeAdd:
 			newUsageValue = currentUsageValue + usage.UsageValue
 		default:
-			return fmt.Errorf("invalid update type: %s", usage.UpdateType)
+			return fmt.Errorf("%w: %s", ErrInvalidUpdateType, usage.UpdateType)
 		}
 		log.Debugf("calculated the new usage to be %f", newUsageValue)
 

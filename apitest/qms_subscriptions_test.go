@@ -135,18 +135,16 @@ func TestUsageEndpoints(t *testing.T) {
 		assertGolden(t, "usage_list_after_add", got, http.StatusOK)
 	})
 
-	// KNOWN BUG, recorded deliberately: this should be a 400. httpStatusCode
-	// compares against its sentinel errors with ==, but addUsage returns a
-	// formatted error wrapping the bad value, so nothing matches and every
-	// invalid input falls through to 500. Captured as-is so the merge can't
-	// change it by accident; fix it as its own change, with this golden
-	// updated in the same commit.
-	t.Run("unknown update type returns 500 instead of 400", func(t *testing.T) {
+	// An update type the service doesn't implement is bad input, so it has to be
+	// a 400. It used to be a 500: the operation lookup never failed (it ignored
+	// the requested name), so the request fell through to a formatted error that
+	// httpStatusCode, which compares sentinels with ==, could not classify.
+	t.Run("an unknown update type is refused", func(t *testing.T) {
 		body := fmt.Sprintf(
 			`{"username": %q, "resource_name": "cpu.hours", "usage_value": 1, "update_type": "MULTIPLY", "metadata": "{}"}`,
 			testUser,
 		)
-		assertGolden(t, "usage_add_bad_update_type", do(t, http.MethodPost, "/v1/usages", body), http.StatusInternalServerError)
+		assertGolden(t, "usage_add_bad_update_type", do(t, http.MethodPost, "/v1/usages", body), http.StatusBadRequest)
 	})
 }
 
