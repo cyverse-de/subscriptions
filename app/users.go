@@ -139,7 +139,15 @@ func (a *App) AddUserHTTPHandler(c echo.Context) error {
 		})
 	}
 
-	request.Username = c.Param("username")
+	// The username comes from the body; this route declares no path parameters.
+	// It used to be overwritten with c.Param("username"), which is always empty
+	// here, so every call subscribed a blank username instead of the requested
+	// one.
+	if request.Username == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"message": "no username provided in the request body",
+		})
+	}
 
 	response := a.addUser(ctx, &request)
 
