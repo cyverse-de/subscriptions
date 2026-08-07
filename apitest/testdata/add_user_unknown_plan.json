@@ -1,0 +1,14 @@
+{
+  "error": {
+    "error_code": "BAD_REQUEST",
+    "message": "subscription plan does not exist: No Such Plan",
+    "status_code": 400
+  },
+  "header": {
+    "map": {}
+  },
+  "planName": "",
+  "planUuid": "",
+  "username": "",
+  "uuid": ""
+}
