@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/db"
@@ -17,9 +18,10 @@ import (
 
 // SubscriptionAdderConfig contains the configuration for a subscription adder.
 type SubscriptionAdderConfig struct {
-	Log   *logrus.Entry
-	Ctx   context.Context
-	Force bool
+	Log            *logrus.Entry
+	Ctx            context.Context
+	Force          bool
+	UsernameSuffix string
 }
 
 // SubscriptionAdder encapsulates the addition of subscriptions with a cached index of subscription plans.
@@ -86,6 +88,13 @@ func (sa *SubscriptionAdder) AddSubscription(tx *gorm.DB, req model.Subscription
 	if username == nil || *username == "" {
 		return sa.subscriptionError("", "no username provided in request")
 	}
+
+	// Every other /v1 route trims the suffix from its path parameter. This one
+	// takes the username from the request body and used to store it verbatim,
+	// so an admin subscribing "user@domain" created a second user row that the
+	// user's own routes -- which look up the trimmed name -- never saw.
+	trimmed := strings.TrimSuffix(*username, sa.cfg.UsernameSuffix)
+	username = &trimmed
 	if planName == nil || *planName == "" {
 		return sa.subscriptionError(*username, "no plan name provided in request")
 	}
@@ -206,9 +215,10 @@ func (s Server) AddSubscriptions(ctx echo.Context) error {
 
 	// Create a new subscription adder.
 	saConfig := &SubscriptionAdderConfig{
-		Log:   log,
-		Ctx:   context,
-		Force: force,
+		Log:            log,
+		Ctx:            context,
+		Force:          force,
+		UsernameSuffix: s.UsernameSuffix,
 	}
 	subscriptionAdder, err := NewSubscriptionAdder(s.GORMDB, saConfig)
 	if err != nil {
