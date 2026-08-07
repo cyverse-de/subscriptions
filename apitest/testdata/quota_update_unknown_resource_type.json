@@ -1,0 +1,4 @@
+{
+  "error": "resource type 'no.such.resource' not found",
+  "status": "Bad Request"
+}
