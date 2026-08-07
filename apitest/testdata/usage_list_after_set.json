@@ -1,0 +1,16 @@
+{
+  "result": [
+    {
+      "id": "<uuid>",
+      "last_modified_at": "<timestamp>",
+      "resource_type": {
+        "consumable": true,
+        "id": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb",
+        "name": "cpu.hours",
+        "unit": "cpu hours"
+      },
+      "usage": 12.5
+    }
+  ],
+  "status": "OK"
+}

@@ -21,6 +21,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,7 +120,15 @@ func runSuite(m *testing.M) int {
 
 	// Overage reporting is on, which is how the service is deployed; the
 	// existing unit tests only cover the short circuit when it's off.
-	testRouter = app.New(testDB, UsernameSuffix, true).Router
+	//
+	// The two route trees are wired exactly as main() wires them, including the
+	// suffix discrepancy: New gets the bare domain from users.domain, while the
+	// QMS handlers get it with the leading "@" they trim with.
+	a := app.New(testDB, strings.TrimPrefix(UsernameSuffix, "@"), true)
+	if err = a.RegisterQMSAPI(UsernameSuffix); err != nil {
+		log.Fatalf("unable to register the QMS API: %s", err)
+	}
+	testRouter = a.Router
 
 	return m.Run()
 }

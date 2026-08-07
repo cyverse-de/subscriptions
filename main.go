@@ -95,6 +95,14 @@ func main() {
 
 	a := app.New(dbconn, userSuffix, *reportOverages)
 
+	// The QMS handlers strip the suffix with strings.TrimSuffix, so they need
+	// the leading "@" that users.domain was trimmed of above. Passing the bare
+	// domain would turn "user@example.org" into "user@" rather than "user".
+	if err = a.RegisterQMSAPI("@" + userSuffix); err != nil {
+		log.Fatal(err)
+	}
+	log.Info("registered the QMS /v1 API")
+
 	srv := fmt.Sprintf(":%s", strconv.Itoa(*listenPort))
 	log.Fatal(http.ListenAndServe(srv, a.Router))
 }

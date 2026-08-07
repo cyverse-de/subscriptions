@@ -13,6 +13,9 @@ import (
 	"github.com/cyverse-de/subscriptions/common"
 	"github.com/cyverse-de/subscriptions/db"
 	"github.com/cyverse-de/subscriptions/errors"
+	"github.com/cyverse-de/subscriptions/internal/qmsapi"
+	"github.com/cyverse-de/subscriptions/internal/qmsapi/controllers"
+	qmsdb "github.com/cyverse-de/subscriptions/internal/qmsapi/db"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -89,6 +92,31 @@ func New(db *sqlx.DB, userSuffix string, reportOverages bool) *App {
 	app.Router.PUT("/quotas", app.AddQuotaHTTPHandler)
 
 	return app
+}
+
+// RegisterQMSAPI mounts the QMS /v1 API on this app's router, sharing the
+// database connection the rest of the service already uses.
+//
+// It is separate from New because opening the GORM layer can fail, and because
+// New is also called without a database by tests that exercise only the paths
+// which return before touching one.
+func (a *App) RegisterQMSAPI(usernameSuffix string) error {
+	gormdb, err := qmsdb.InitGORMConnection(a.db.DB)
+	if err != nil {
+		return fmt.Errorf("unable to open the GORM connection for the QMS API: %w", err)
+	}
+
+	a.Router.Validator = qmsapi.NewCustomValidator()
+	qmsapi.RegisterHandlers(controllers.Server{
+		Router:         a.Router,
+		DB:             a.db.DB,
+		GORMDB:         gormdb,
+		Service:        "subscriptions",
+		Title:          "CyVerse Subscriptions",
+		UsernameSuffix: usernameSuffix,
+	})
+
+	return nil
 }
 
 func (a *App) FixUsername(username string) (string, error) {
