@@ -1,0 +1,13 @@
+{
+  "error": null,
+  "header": {
+    "map": {}
+  },
+  "overages": [
+    {
+      "quota": 100,
+      "resource_name": "cpu.hours",
+      "usage": 150
+    }
+  ]
+}

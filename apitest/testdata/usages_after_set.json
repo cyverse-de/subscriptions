@@ -1,0 +1,23 @@
+{
+  "error": null,
+  "header": {
+    "map": {}
+  },
+  "usages": [
+    {
+      "created_at": "<timestamp>",
+      "created_by": "qms",
+      "last_modified_at": "<timestamp>",
+      "last_modified_by": "qms",
+      "resource_type": {
+        "consumable": true,
+        "name": "cpu.hours",
+        "unit": "cpu hours",
+        "uuid": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
+      },
+      "subscription_id": "<uuid>",
+      "usage": 42,
+      "uuid": "<uuid>"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "error": {
+    "error_code": "NOT_FOUND",
+    "message": "subscription add-on not found",
+    "status_code": 404
+  },
+  "header": {
+    "map": {}
+  },
+  "subscription_addon": null
+}
