@@ -153,35 +153,6 @@ type Subscription struct {
 	Rate               PlanRate            `db:"plan_rates"`
 }
 
-func NewSubscriptionFromQMS(s *qms.Subscription) *Subscription {
-	var quotas []Quota
-	var usages []Usage
-
-	for _, sq := range s.Quotas {
-		quotas = append(quotas, *NewQuotaFromQMS(sq))
-	}
-	for _, su := range s.Usages {
-		usages = append(usages, *NewUsageFromQMS(su))
-	}
-
-	return &Subscription{
-		ID:                 s.Uuid,
-		EffectiveStartDate: s.EffectiveEndDate.AsTime(),
-		EffectiveEndDate:   s.EffectiveEndDate.AsTime(),
-		User: User{
-			ID:       s.User.Uuid,
-			Username: s.User.Username,
-		},
-		Quotas:         quotas,
-		Usages:         usages,
-		Plan:           *NewPlanFromQMS(s.Plan),
-		CreatedBy:      s.User.Username,
-		LastModifiedBy: s.User.Username,
-		Paid:           s.Paid,
-		Rate:           *NewPlanRateFromQMS(s.PlanRate, s.Plan.Uuid),
-	}
-}
-
 func (up Subscription) ToQMSSubscription() *qms.Subscription {
 	// Convert the list of quotas.
 	quotas := make([]*qms.Quota, len(up.Quotas))
@@ -467,19 +438,6 @@ type Usage struct {
 	LastModifiedAt time.Time    `db:"last_modified_at"`
 }
 
-func NewUsageFromQMS(q *qms.Usage) *Usage {
-	return &Usage{
-		ID:             q.Uuid,
-		Usage:          q.Usage,
-		SubscriptionID: q.SubscriptionId,
-		ResourceType:   *NewResourceTypeFromQMS(q.ResourceType),
-		CreatedBy:      q.CreatedBy,
-		CreatedAt:      q.CreatedAt.AsTime(),
-		LastModifiedBy: q.LastModifiedBy,
-		LastModifiedAt: q.LastModifiedAt.AsTime(),
-	}
-}
-
 func (u Usage) ToQMSUsage() *qms.Usage {
 	return &qms.Usage{
 		Uuid:           u.ID,
@@ -501,21 +459,6 @@ type Quota struct {
 	CreatedAt      time.Time    `db:"created_at"`
 	LastModifiedBy string       `db:"last_modified_by"`
 	LastModifiedAt time.Time    `db:"last_modified_at"`
-}
-
-func NewQuotaFromQMS(q *qms.Quota) *Quota {
-	return &Quota{
-		ID:           q.Uuid,
-		Quota:        q.Quota,
-		ResourceType: *NewResourceTypeFromQMS(q.ResourceType),
-		Subscription: Subscription{
-			ID: q.SubscriptionId,
-		},
-		CreatedBy:      q.CreatedBy,
-		CreatedAt:      q.CreatedAt.AsTime(),
-		LastModifiedBy: q.LastModifiedBy,
-		LastModifiedAt: q.LastModifiedAt.AsTime(),
-	}
 }
 
 func (q Quota) ToQMSQuota() *qms.Quota {

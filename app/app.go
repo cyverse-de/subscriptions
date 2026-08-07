@@ -95,7 +95,6 @@ func New(db *sqlx.DB, userSuffix string, reportOverages bool) *App {
 	app.Router.GET("/plans", app.ListPlansHTTPHandler)
 	app.Router.PUT("/plans", app.AddPlanHTTPHandler)
 	app.Router.GET("/plans/:plan_id", app.GetPlanHTTPHandler)
-	app.Router.POST("/quotas/defaults", app.UpsertQuotaDefaultsHTTPHandler)
 	app.Router.PUT("/quotas", app.AddQuotaHTTPHandler)
 
 	return app
