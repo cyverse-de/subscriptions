@@ -68,7 +68,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 
 	log.Debug("validated usage information")
 
-	log = log.WithFields(logrus.Fields{
+	log := log.WithFields(logrus.Fields{
 		"user":       username,
 		"resource":   usage.ResourceName,
 		"updateType": usage.UpdateType,
@@ -96,7 +96,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 
 		// Verify that the update operation for the given update type exists.
 		updateOperation := model.UpdateOperation{Name: usage.UpdateType}
-		err = tx.WithContext(ctx).Debug().First(&updateOperation).Error
+		err = tx.WithContext(ctx).First(&updateOperation).Error
 		if err == gorm.ErrRecordNotFound {
 			return errors.New("invalid update type")
 		}
@@ -141,7 +141,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 			UserID:            subscription.UserID,
 			Metadata:          &usage.Metadata,
 		}
-		err = tx.WithContext(ctx).Debug().Create(&update).Error
+		err = tx.WithContext(ctx).Create(&update).Error
 		if err != nil {
 			return err
 		}
@@ -185,7 +185,7 @@ func (s Server) userUpdates(ctx context.Context, username string) ([]model.Updat
 	var err error
 
 	updates := make([]model.Update, 0)
-	err = s.GORMDB.WithContext(ctx).Debug().
+	err = s.GORMDB.WithContext(ctx).
 		Table("updates").
 		Joins("JOIN users ON updates.user_id = users.id").
 		Preload("ResourceType").
@@ -212,7 +212,13 @@ func (s Server) GetAllUsageOfUser(ctx echo.Context) error {
 
 	log = log.WithFields(logrus.Fields{"user": username})
 
-	subscription, err := db.GetActiveSubscriptionDetails(context, s.GORMDB, username)
+	// GetActiveSubscriptionDetails subscribes the user to the default plan when they have no active subscription, so
+	// this read path writes and needs a transaction of its own.
+	var subscription *model.Subscription
+	err = s.GORMDB.Transaction(func(tx *gorm.DB) error {
+		subscription, err = db.GetActiveSubscriptionDetails(context, tx, username)
+		return err
+	})
 	if err != nil {
 		sCode := httpStatusCode(err)
 		log.Error(err)

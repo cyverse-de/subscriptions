@@ -38,7 +38,7 @@ func (s Server) ListResourceTypes(ctx echo.Context) error {
 
 	log := log.WithFields(logrus.Fields{"context": "listing resource types"})
 
-	err := s.GORMDB.Debug().Find(&data).Error
+	err := s.GORMDB.Find(&data).Error
 	if err != nil {
 		msg := fmt.Sprintf("unable to list resource types: %s", err)
 		return model.Error(ctx, msg, http.StatusInternalServerError)
@@ -179,16 +179,16 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 	log.Debug("extracted and validated the request body")
 
 	// Perform these steps in a transaction to ensure consistency.
-	return s.GORMDB.Transaction(func(tx *gorm.DB) error {
+	return s.transaction(func(tx *gorm.DB) error {
 		var err error
 
 		// Verify that the resource type exists.
 		existingResourceType, err := db.GetResourceTypeByID(context, tx, resourceTypeID)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		} else if existingResourceType == nil {
 			msg := fmt.Sprintf("resource type not found: %s", resourceTypeID)
-			return model.Error(ctx, msg, http.StatusNotFound)
+			return txError(ctx, msg, http.StatusNotFound)
 		}
 
 		log.Debug("verified that the resource type exists")
@@ -196,12 +196,12 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 		// Verify that a different resource type with the new name doesn't exist already.
 		homonym, err := db.GetResourceTypeByName(context, tx, inboundResourceType.Name)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusConflict)
+			return txError(ctx, err.Error(), http.StatusConflict)
 		} else if homonym != nil && *homonym.ID != *existingResourceType.ID {
 			fmt.Printf("existing: %+v\n", existingResourceType)
 			fmt.Printf("homonym: %+v\n", homonym)
 			msg := fmt.Sprintf("a resource type with the given name already exists: %s", inboundResourceType.Name)
-			return model.Error(ctx, msg, http.StatusConflict)
+			return txError(ctx, msg, http.StatusConflict)
 		}
 
 		// Update the resource type.
@@ -210,7 +210,7 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 		existingResourceType.Consumable = inboundResourceType.Consumable
 		err = db.UpdateResourceType(context, tx, *existingResourceType)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		return model.Success(ctx, existingResourceType, http.StatusOK)

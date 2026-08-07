@@ -114,9 +114,12 @@ func GetActivePlanRate(ctx context.Context, db *gorm.DB, planID string) (*model.
 	wrapMsg := fmt.Sprintf("unable to look up the active plan rate for '%s'", planID)
 	var err error
 
+	// The plan ID has to be an explicit condition: GORM only derives conditions from the primary key fields of the
+	// destination struct, and PlanID isn't one of them.
 	planRate := model.PlanRate{PlanID: &planID}
 	err = db.
 		WithContext(ctx).
+		Where("plan_id = ?", planID).
 		Where("effective_date <= CURRENT_TIMESTAMP").
 		Order("effective_date desc").
 		Limit(1).

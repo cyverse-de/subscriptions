@@ -35,7 +35,7 @@ const (
 // GetAllUsers lists the users that are currently defined in the database.
 func (s Server) GetAllUsers(ctx echo.Context) error {
 	var data []model.User
-	err := s.GORMDB.Debug().Find(&data).Error
+	err := s.GORMDB.Find(&data).Error
 	if err != nil {
 		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
 	}
@@ -62,13 +62,13 @@ func (s Server) GetSubscriptionDetails(ctx echo.Context) error {
 	log = log.WithFields(logrus.Fields{"user": username})
 
 	// Start a transaction.
-	return s.GORMDB.Transaction(func(tx *gorm.DB) error {
+	return s.transaction(func(tx *gorm.DB) error {
 		var err error
 
 		// Look up or insert the user.
 		user, err := db.GetUser(context, tx, username)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		log.Debugf("found user %s in db", user.Username)
@@ -76,7 +76,7 @@ func (s Server) GetSubscriptionDetails(ctx echo.Context) error {
 		// Look up or create the user plan.
 		subscription, err := db.GetActiveSubscriptionDetails(context, tx, user.Username)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		log.Debugf("user plan name is %s", subscription.Plan.Name)
 
@@ -136,31 +136,31 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 	}
 
 	// Start a transaction.
-	return s.GORMDB.Transaction(func(tx *gorm.DB) error {
+	return s.transaction(func(tx *gorm.DB) error {
 		// Look up the resource type.
 		resourceType, err := db.GetResourceTypeByName(ctx, tx, resourceTypeName)
 		if err != nil {
 			log.Error(err)
-			return model.Error(c, err.Error(), http.StatusInternalServerError)
+			return txError(c, err.Error(), http.StatusInternalServerError)
 		}
 		if resourceType == nil {
 			msg := fmt.Sprintf("resource type '%s' not found", resourceTypeName)
 			log.Error(msg)
-			return model.Error(c, msg, http.StatusBadRequest)
+			return txError(c, msg, http.StatusBadRequest)
 		}
 
 		// Determine whether or not the user has an active subscription.
 		hasActiveSubscription, err := db.HasActiveSubscription(ctx, tx, username)
 		if err != nil {
 			log.Error(err)
-			return model.Error(c, err.Error(), http.StatusInternalServerError)
+			return txError(c, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Load the user's current subscription, creating a new subscription if necessary.
 		subcription, err := db.GetActiveSubscription(ctx, tx, username)
 		if err != nil {
 			log.Error(err)
-			return model.Error(c, err.Error(), http.StatusInternalServerError)
+			return txError(c, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Insert or update the quota.
@@ -172,14 +172,14 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 		err = db.UpsertQuota(ctx, tx, quota)
 		if err != nil {
 			log.Error(err)
-			return model.Error(c, err.Error(), http.StatusInternalServerError)
+			return txError(c, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Load the subscription details.
 		details, err := db.GetSubscriptionDetails(ctx, tx, *subcription.ID)
 		if err != nil {
 			log.Error(err)
-			return model.Error(c, err.Error(), http.StatusInternalServerError)
+			return txError(c, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Return the response.
@@ -205,14 +205,14 @@ func (s Server) AddUser(ctx echo.Context) error {
 	log = log.WithFields(logrus.Fields{"user": username})
 
 	// Start a transaction.
-	return s.GORMDB.Transaction(func(tx *gorm.DB) error {
+	return s.transaction(func(tx *gorm.DB) error {
 		var err error
 
 		// Either add the user to the database or look up the existing user
 		// information.
 		user, err := db.GetUser(context, tx, username)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		log.Debug("found user in the database")
@@ -221,7 +221,7 @@ func (s Server) AddUser(ctx echo.Context) error {
 		// plan if not subscribed already.
 		_, err = db.GetActiveSubscription(context, tx, user.Username)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		log.Debug("ensured that user is subscribed to a plan")
@@ -302,31 +302,31 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 	})
 
 	// Start a transaction.
-	return s.GORMDB.Transaction(func(tx *gorm.DB) error {
+	return s.transaction(func(tx *gorm.DB) error {
 		var err error
 
 		// Either add the user to the database or look up the existing user information.
 		user, err := db.GetUser(context, tx, username)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		log.Debug("found user in the database")
 
 		// Verify that a plan with the given name exists.
 		plan, err := db.GetPlan(context, tx, planName)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		if plan == nil {
 			msg := fmt.Sprintf("plan name `%s` not found", planName)
-			return model.Error(ctx, msg, http.StatusBadRequest)
+			return txError(ctx, msg, http.StatusBadRequest)
 		}
 		log.Debug("verified that plan exists in database")
 
 		// Deactivate conflicting subscriptions for the user.
 		err = db.DeactivateSubscriptions(context, tx, *user.ID, startDate, endDate)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		log.Debug("deactivated conflicting subscriptions for the user")
 
@@ -343,7 +343,7 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 		// Subscribe the user to the plan.
 		subscription, err := db.SubscribeUserToPlan(context, tx, user, plan, opts)
 		if err != nil {
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		log.Debug("finished adding the new subscription")
 
@@ -351,7 +351,7 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 		details, err := db.GetSubscriptionDetails(context, tx, *subscription.ID)
 		if err != nil {
 			log.Error(err)
-			return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Return the response.

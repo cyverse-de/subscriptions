@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 
 	"github.com/cyverse-de/go-mod/logging"
@@ -13,6 +14,23 @@ import (
 
 var log = logging.Log.WithFields(logrus.Fields{"package": "controllers"})
 
+// txAbort carries an error response that has already been written to the client. model.Error returns nil once the
+// response is written, so returning it directly from a transaction callback tells GORM to commit the very write the
+// response is reporting as failed; wrapping it in an error GORM can see is what rolls the transaction back.
+type txAbort struct {
+	response error
+}
+
+func (a txAbort) Error() string {
+	return "transaction rolled back after an error response was written"
+}
+
+// txError writes an error response and rolls the enclosing transaction back. Use it in place of model.Error inside a
+// transaction callback.
+func txError(ctx echo.Context, errStr string, status int) error {
+	return txAbort{response: model.Error(ctx, errStr, status)}
+}
+
 // Server defines the REST API of the qms
 type Server struct {
 	Router         *echo.Echo
@@ -23,6 +41,19 @@ type Server struct {
 	Version        string
 	ReportOverages bool
 	UsernameSuffix string
+}
+
+// transaction runs fn inside a database transaction, unwrapping the response written by any txError call within it so
+// that echo sees the handler's real return value.
+func (s Server) transaction(fn func(tx *gorm.DB) error) error {
+	err := s.GORMDB.Transaction(fn)
+
+	var abort txAbort
+	if errors.As(err, &abort) {
+		return abort.response
+	}
+
+	return err
 }
 
 // ServerInfo returns basic information about the server.

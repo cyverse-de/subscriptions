@@ -11,7 +11,7 @@ import (
 // UpsertUsage either inserts a new usage record into the database or updates an existing one. A new update record
 // is also recorded at the same time.
 func UpsertUsage(ctx context.Context, db *gorm.DB, usage *model.Usage) error {
-	return db.WithContext(ctx).Debug().Clauses(clause.OnConflict{
+	return db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{
 				Name: "subscription_id",

@@ -34,6 +34,16 @@ func overlapping(startDate, endDate time.Time) func(*gorm.DB) *gorm.DB {
 	}
 }
 
+// notExpiredAt restricts a subscription query to the subscriptions that have not ended as of the given cutoff. As with
+// activeNow, a subscription with no effective end date has not ended.
+func notExpiredAt(cutoff time.Time) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where(
+			"(subscriptions.effective_end_date IS NULL OR subscriptions.effective_end_date >= ?)", cutoff,
+		)
+	}
+}
+
 // withSubscriptionDetails preloads the associations required to describe a subscription in a response and to determine
 // its plan's active quota defaults.
 func withSubscriptionDetails(db *gorm.DB) *gorm.DB {
@@ -325,19 +335,17 @@ func ListSubscriptionsForUser(
 
 	// Add the where clause for the cutoff if we're supposed to.
 	if !includeExpired {
-		baseQuery = baseQuery.Where("subscriptions.effective_end_date >= ?", cutoff)
+		baseQuery = baseQuery.Scopes(notExpiredAt(cutoff))
 	}
 
 	// Count the number of items in the result set.
 	err = baseQuery.
-		Debug().
 		Model(&subscriptions).
 		Count(&count).Error
 
 	// Look up the result set.
 	if err == nil {
 		err = baseQuery.
-			Debug().
 			Order("subscriptions.effective_start_date asc, subscriptions.effective_end_date asc").
 			Find(&subscriptions).Error
 	}
@@ -381,11 +389,13 @@ func DeactivateSubscriptions(ctx context.Context, db *gorm.DB, userID string, st
 		return errors.Wrap(err, wrapMsg)
 	}
 
-	// Subscriptions that should become effective as of the end date.
+	// Subscriptions that should become effective as of the end date. The upper bound on the start date keeps
+	// subscriptions scheduled entirely after the new window from being dragged backwards into it.
 	err = db.WithContext(ctx).
 		Model(&model.Subscription{}).
 		Where("user_id = ?", userID).
 		Where("effective_start_date >= ?", startDate).
+		Where("effective_start_date < ?", endDate).
 		Where("(effective_end_date IS NULL OR effective_end_date > ?)", endDate).
 		UpdateColumn("effective_start_date", endDate).
 		Error

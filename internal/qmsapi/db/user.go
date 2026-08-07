@@ -35,7 +35,7 @@ func UserExists(ctx context.Context, db *gorm.DB, username string) (bool, error)
 	var err error
 
 	var user model.User
-	err = db.WithContext(ctx).Debug().Where("username = ?", username).First(&user).Error
+	err = db.WithContext(ctx).Where("username = ?", username).First(&user).Error
 	if err == gorm.ErrRecordNotFound {
 		return false, nil
 	} else if err != nil {

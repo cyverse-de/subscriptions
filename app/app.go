@@ -46,6 +46,13 @@ func New(db *sqlx.DB, userSuffix string, reportOverages bool) *App {
 	app.Router.Use(middleware.Recover())
 
 	app.Router.HTTPErrorHandler = func(err error, c echo.Context) {
+		// A handler that already wrote its response and then failed (a QMS /v1
+		// handler whose transaction fails to commit, say) would otherwise get a
+		// second JSON document appended to the first.
+		if c.Response().Committed {
+			return
+		}
+
 		code := http.StatusInternalServerError
 		var body interface{}
 
