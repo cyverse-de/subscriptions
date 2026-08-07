@@ -1,0 +1,14 @@
+{
+  "error": {
+    "error_code": "BAD_REQUEST",
+    "message": "no plan name provided in the request body",
+    "status_code": 400
+  },
+  "header": {
+    "map": {}
+  },
+  "planName": "",
+  "planUuid": "",
+  "username": "",
+  "uuid": ""
+}

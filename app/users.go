@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/cyverse-de/go-mod/pbinit"
@@ -49,10 +50,24 @@ func (a *App) addUser(ctx context.Context, request *qms.AddUserRequest) *qms.Add
 
 	// extract information about the subscription from the request
 	planName := request.PlanName
+	if planName == "" {
+		response.Error = errors.NatsError(ctx, errors.AsBadRequest(
+			errors.New("no plan name provided in the request body"),
+		))
+		return response
+	}
 
 	plan, err := d.GetPlanByName(ctx, planName, db.WithTX(tx))
 	if err != nil {
 		response.Error = errors.NatsError(ctx, err)
+		return response
+	}
+	// A plan that doesn't exist comes back as a nil plan with no error, and
+	// every use of it below dereferences it.
+	if plan == nil {
+		response.Error = errors.NatsError(ctx, errors.AsBadRequest(
+			fmt.Errorf("subscription plan does not exist: %s", planName),
+		))
 		return response
 	}
 

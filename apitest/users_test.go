@@ -42,25 +42,22 @@ func TestAddUser(t *testing.T) {
 			wantUsers:  map[string]int{"": 0},
 		},
 		{
-			// KNOWN BUG, recorded deliberately and unrelated to the username:
-			// an absent or unknown plan name resolves to a nil plan that
-			// nothing checks, so SetActiveSubscription dereferences it
-			// (db/userplans.go:125). Only middleware.Recover keeps that from
-			// dropping the connection, and the caller gets a 500 where a 400
-			// belongs. Fix it as its own change, with these goldens updated in
-			// the same commit. Note the wire name is "planName", not
-			// "plan_name".
-			name:       "no plan name panics",
-			golden:     "add_user_no_plan_panics",
+			// A missing or unknown plan used to reach SetActiveSubscription
+			// with a nil plan and panic there (db/userplans.go:125), which
+			// middleware.Recover turned into a 500. Note the wire name is
+			// "planName", not "plan_name", so a caller sending "plan_name"
+			// lands in this case.
+			name:       "a missing plan name is refused",
+			golden:     "add_user_no_plan",
 			body:       `{"username": "brandnewuser"}`,
-			wantStatus: http.StatusInternalServerError,
+			wantStatus: http.StatusBadRequest,
 			wantUsers:  map[string]int{"brandnewuser": 0},
 		},
 		{
-			name:       "unknown plan name panics too",
-			golden:     "add_user_unknown_plan_panics",
+			name:       "an unknown plan name is refused",
+			golden:     "add_user_unknown_plan",
 			body:       `{"username": "brandnewuser", "planName": "No Such Plan", "paid": true, "periods": 1}`,
-			wantStatus: http.StatusInternalServerError,
+			wantStatus: http.StatusBadRequest,
 			wantUsers:  map[string]int{"brandnewuser": 0},
 		},
 	}
