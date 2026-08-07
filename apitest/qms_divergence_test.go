@@ -219,7 +219,7 @@ func TestUnforcedSubscriptionChangeOnlyUpgrades(t *testing.T) {
 
 			// Whatever the response says, the active subscription in the
 			// database is what the rest of the DE reads.
-			if active := activePlanFor(t, testUser); active != tc.wantEndingPlan {
+			if active := activePlanFor(t, trimmedUser); active != tc.wantEndingPlan {
 				t.Errorf("active plan = %q, want %q", active, tc.wantEndingPlan)
 			}
 		})
@@ -236,7 +236,7 @@ func TestUnforcedSubscriptionForNewUser(t *testing.T) {
 	if newSubscription, _ := result["new_subscription"].(bool); !newSubscription {
 		t.Error("new_subscription = false, want true for a user with no prior subscription")
 	}
-	if active := activePlanFor(t, testUser); active != "Pro" {
+	if active := activePlanFor(t, trimmedUser); active != "Pro" {
 		t.Errorf("active plan = %q, want \"Pro\"", active)
 	}
 }
@@ -248,13 +248,13 @@ func TestUnforcedSubscriptionForNewUser(t *testing.T) {
 // other test would stay green while legacy subscriptions stopped counting.
 func TestUnforcedChangeSeesAnOpenEndedSubscription(t *testing.T) {
 	resetDB(t)
-	insertOpenEndedSubscription(t, testUser, "Pro")
+	insertOpenEndedSubscription(t, trimmedUser, "Pro")
 
 	result := subscribe(t, testUser, "Basic", false)
 	if newSubscription, _ := result["new_subscription"].(bool); newSubscription {
 		t.Error("new_subscription = true, want false: the open-ended subscription is still active")
 	}
-	if active := activePlanFor(t, testUser); active != "Pro" {
+	if active := activePlanFor(t, trimmedUser); active != "Pro" {
 		t.Errorf("active plan = %q, want \"Pro\"", active)
 	}
 }
@@ -265,11 +265,11 @@ func TestUnforcedChangeSeesAnOpenEndedSubscription(t *testing.T) {
 // explicitly — leaving the user on two plans at once.
 func TestUnforcedUpgradeClosesAnOpenEndedSubscription(t *testing.T) {
 	resetDB(t)
-	insertOpenEndedSubscription(t, testUser, "Basic")
+	insertOpenEndedSubscription(t, trimmedUser, "Basic")
 
 	subscribe(t, testUser, "Pro", false)
 
-	if active := activePlanFor(t, testUser); active != "Pro" {
+	if active := activePlanFor(t, trimmedUser); active != "Pro" {
 		t.Errorf("active plan = %q, want \"Pro\" (both plans listed means neither was deactivated)", active)
 	}
 }
@@ -299,7 +299,7 @@ func TestUnforcedChangeDoesNotCancelALaterSubscription(t *testing.T) {
 		  JOIN plans p ON p.id = s.plan_id
 		 WHERE users.username = $1
 		   AND p.name = 'Pro'
-		   AND s.effective_end_date > s.effective_start_date`, testUser)
+		   AND s.effective_end_date > s.effective_start_date`, trimmedUser)
 	if scheduled != 1 {
 		t.Errorf("intact scheduled Pro subscriptions = %d, want 1", scheduled)
 	}
@@ -409,7 +409,7 @@ func TestOverlappingSubscriptionsAreDeactivated(t *testing.T) {
 		}
 	}
 
-	activeCount := queryInt(t, `SELECT count(*)`+activeSubscriptions, testUser)
+	activeCount := queryInt(t, `SELECT count(*)`+activeSubscriptions, trimmedUser)
 	if activeCount != 1 {
 		t.Errorf("active subscriptions = %d, want exactly 1", activeCount)
 	}
@@ -418,24 +418,21 @@ func TestOverlappingSubscriptionsAreDeactivated(t *testing.T) {
 		SELECT count(*)
 		  FROM subscriptions s
 		  JOIN users ON s.user_id = users.id
-		 WHERE users.username = $1`, testUser)
+		 WHERE users.username = $1`, trimmedUser)
 	if totalCount != 3 {
 		t.Errorf("total subscriptions = %d, want 3 (the history is retained)", totalCount)
 	}
 }
 
-// KNOWN BUG, recorded deliberately: the two ways of subscribing a user store
-// two different usernames for the same person. PUT /v1/users/{username} and the
-// usage endpoints trim the configured suffix, but POST /v1/subscriptions passes
-// req.Username through untouched, so an admin bulk-subscribing "user@domain"
-// creates a second user row that the user's own /terrain/qms/user/plan — which
-// looks up the trimmed name — never sees.
+// Both ways of subscribing a user have to store the same username. The bulk
+// endpoint takes the name from the request body and used to store it verbatim,
+// while PUT /v1/users/{username} and the usage endpoints trim the configured
+// suffix -- so an admin bulk-subscribing "user@domain" created a second user
+// row that the user's own /terrain/qms/user/plan never saw.
 //
 // Terrain reaches both paths: POST /terrain/admin/qms/subscriptions is the bulk
-// endpoint, while /terrain/qms/user/* are the trimming ones. Fix this before or
-// during the merge, and expect existing databases to hold duplicate user rows
-// that need reconciling.
-func TestBulkSubscriptionsDoNotTrimTheUsernameSuffix(t *testing.T) {
+// endpoint, while /terrain/qms/user/* are the trimming ones.
+func TestBulkSubscriptionsTrimTheUsernameSuffix(t *testing.T) {
 	resetDB(t)
 
 	body := fmt.Sprintf(
@@ -446,22 +443,25 @@ func TestBulkSubscriptionsDoNotTrimTheUsernameSuffix(t *testing.T) {
 		t.Fatalf("unable to create the subscription: %s", got.body)
 	}
 
-	// The bulk endpoint keeps the suffix.
-	bulkCount := queryInt(t, `SELECT count(*) FROM users WHERE username = $1`, testUser)
-	if bulkCount != 1 {
-		t.Errorf("users rows named %q = %d, want 1", testUser, bulkCount)
+	// The suffixed name is not stored.
+	suffixed := queryInt(t, `SELECT count(*) FROM users WHERE username = $1`, testUser)
+	if suffixed != 0 {
+		t.Errorf("users rows named %q = %d, want 0", testUser, suffixed)
 	}
 
-	// The user-scoped endpoint trims it, producing a second row for the same person.
+	// Reaching the same person through a trimming endpoint finds the same row
+	// rather than creating a second one.
 	createUser(t, testUser)
-	trimmedCount := queryInt(t, `SELECT count(*) FROM users WHERE username = $1`, "testuser")
-	if trimmedCount != 1 {
-		t.Errorf("users rows named %q = %d, want 1", "testuser", trimmedCount)
+	total := queryInt(t, `SELECT count(*) FROM users`)
+	if total != 1 {
+		t.Errorf("total users = %d, want 1 (both endpoints address one person)", total)
 	}
 
-	total := queryInt(t, `SELECT count(*) FROM users`)
-	if total != 2 {
-		t.Errorf("total users = %d, want 2 (one per endpoint, for the same person)", total)
+	subs := queryInt(t, `
+		SELECT count(*) FROM subscriptions s JOIN users u ON s.user_id = u.id
+		 WHERE u.username = $1`, "testuser")
+	if subs < 1 {
+		t.Errorf("subscriptions on the trimmed user = %d, want at least 1", subs)
 	}
 }
 
