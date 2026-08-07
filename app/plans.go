@@ -180,32 +180,3 @@ func (a *App) GetPlanHTTPHandler(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, response)
 }
-
-func (a *App) upsertQuotaDefault(ctx context.Context, _ *qms.AddPlanQuotaDefaultRequest) *qms.QuotaDefaultResponse {
-	response := pbinit.NewQuotaDefaultResponse()
-	response.Error = errors.NatsError(ctx, fmt.Errorf("not implemented"))
-	return response
-}
-
-func (a *App) UpsertQuotaDefaultsHTTPHandler(c echo.Context) error {
-	var (
-		err     error
-		request qms.AddPlanQuotaDefaultRequest
-	)
-
-	ctx := c.Request().Context()
-
-	if err = c.Bind(&request); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "bad request",
-		})
-	}
-
-	response := a.upsertQuotaDefault(ctx, &request)
-
-	if response.Error != nil {
-		return c.JSON(int(response.Error.StatusCode), response)
-	}
-
-	return c.JSON(http.StatusOK, response)
-}
