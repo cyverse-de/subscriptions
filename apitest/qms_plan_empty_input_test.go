@@ -8,7 +8,7 @@ import (
 
 // A request body that parses and validates but carries no rows reaches the save
 // with an empty slice. GORM's Create rejected that outright at the top level
-// (gorm.ErrEmptySlice) while skipping it entirely for an association, so the two
+// (ErrEmptySlice) while skipping it entirely for an association, so the two
 // plan write endpoints answer 500 and creating a plan with neither quota
 // defaults nor rates succeeds. Nothing else covers this; the empty list passes
 // NewPlanQuotaDefaultList.Validate and NewPlanRateList.Validate.

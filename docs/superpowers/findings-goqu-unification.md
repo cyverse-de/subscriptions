@@ -1204,3 +1204,59 @@ arrives as a caller-supplied string and was interpolated straight into the
 accepted names and errors on anything else. The handler validates the same three
 values first, so the branch is unreachable today — it exists so that the column
 name can never be interpolated from a string again.
+
+## Task 16: what the deletion turned up, and the two cleanups it leaves behind
+
+The pre-deletion sweep (`grep -rn 'gorm' --include='*.go' .`) found nothing
+outside the inventory the Task 15 review predicted, so no earlier task was left
+half-finished. Three things are worth recording anyway.
+
+**`plan.go` was not deletable wholesale after all.** The brief listed it as a
+whole-file deletion alongside `subscriptions.go`, but it also held
+`PlanNameBasic`, the constant `SubscribeUserToDefaultPlan` looks the default
+plan up by. `subscriptions_goqu.go:216` referenced it across files, so nothing
+flagged it until the file was gone. It moved to `plan_goqu.go`.
+`subscriptions.go`, `resource_types.go`, `user.go`, `usage.go` and `gorm.go`
+went whole, as predicted.
+
+**`model.Quota.TableName()` was a GORM-only method with no remaining callers.**
+It existed to satisfy GORM's `schema.Tabler` interface; goqu names its tables
+explicitly at every call site (`db/tables`), so nothing reads it. `unused` does
+not flag exported methods, so it would have survived the lint gate
+indefinitely. It was deleted with the rest of the layer. It is the only member
+of `internal/qmsapi/model` that was GORM machinery rather than data.
+
+**Four comments referenced GORM symbols in lowercase and had to be reworded**
+to satisfy the plan's `grep -rn 'gorm' --include='*.go' .` criterion:
+`db/errors.go:9` and `:18`, `apitest/qms_plan_empty_input_test.go:11`, and
+`apitest/qms_resource_types_test.go:81`. Each still says the same thing about
+the same history, in prose rather than as a package-qualified identifier. The
+~30 remaining comments that say "GORM" in prose were left alone: they explain
+why the goqu code is shaped as it is (why associations carry `db:"-"`, why
+every list destination is initialized, why a predicate is explicit), and that
+rationale outlives the dependency. Two of them stated the *present* rather than
+the past and were corrected: `db/db.go`'s package note still claimed the
+service layers GORM over its connection, and `model/plan.go:87` used the
+present tense for `Preload`.
+
+### Two cleanups this branch deliberately does not make
+
+**The `*_goqu.go` suffix is now vestigial.** It existed to let a goqu
+implementation take the canonical function name while its GORM original sat
+beside it under a `GORM` suffix. Every file in `internal/qmsapi/db` is goqu
+now, so the suffix distinguishes nothing: `subscriptions_goqu.go`,
+`plan_goqu.go`, `resource_types_goqu.go`, `updates_goqu.go`, `usage_goqu.go`
+and `user_goqu.go` should become `subscriptions.go`, `plan.go`, and so on.
+Doing it here would have made the deletion diff unreadable — git would report
+each file as a rewrite rather than as a deletion plus an untouched file — so it
+belongs in a follow-up whose whole content is the rename.
+
+**The file split proposed for `subscriptions_goqu.go` (757 lines) and
+`plan_goqu.go` (467) was declined.** `CLAUDE.md`'s ~300-line guidance suggests
+splitting "by entity/domain type (e.g., one file per database entity)", and
+these files already *are* one per entity. The available split is by concern —
+predicates, writes, association loaders + listings — which is a different axis
+from the one the guideline names, and it would separate
+`loadSubscriptionDetailsBatch` from the four read functions that are its only
+callers. It would also collide with the rename above, which is the more
+valuable move and should go first. Recorded as a judgment, not an oversight.

@@ -78,7 +78,7 @@ func TestGetResourceTypeDetails(t *testing.T) {
 			do(t, http.MethodGet, "/v1/resource-types/"+cpuHoursID, ""), http.StatusOK)
 	})
 
-	// gorm.ErrRecordNotFound is mapped to 404 here. goqu reports absence as
+	// A not-found row is mapped to 404 here. goqu reports absence as
 	// sql.ErrNoRows instead, so this is the assertion that catches a rewrite
 	// turning a clean 404 into a 500.
 	t.Run("an unknown ID is a not-found", func(t *testing.T) {

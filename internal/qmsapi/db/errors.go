@@ -6,7 +6,7 @@ var (
 	ErrResourceTypeConflict = errors.New("a resource type with the same name already exists")
 
 	// ErrNotFound reports a row that does not exist. The GORM layer signalled
-	// this with gorm.ErrRecordNotFound. goqu does not raise an error at all:
+	// this with its own ErrRecordNotFound. goqu does not raise an error at all:
 	// ScanStruct/ScanVal report absence as a false "found" return with a nil
 	// error, and sql.ErrNoRows never reaches the caller, so matching on it
 	// would silently yield a zero-valued row instead of a not-found. Queries
@@ -15,7 +15,7 @@ var (
 	ErrNotFound = errors.New("record not found")
 
 	// ErrEmptySlice reports a bulk write that was handed nothing to write. It
-	// reproduces gorm.ErrEmptySlice, which Create raised whenever its
+	// reproduces GORM's ErrEmptySlice, which Create raised whenever its
 	// destination was a zero-length slice, verbatim: the two plan write
 	// endpoints accept a body whose list is empty and answer 500 with this
 	// message. goqu raises nothing at all for the same input — it emits

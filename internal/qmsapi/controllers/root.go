@@ -11,7 +11,6 @@ import (
 	"github.com/doug-martin/goqu/v9"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
-	"gorm.io/gorm"
 )
 
 var log = logging.Log.WithFields(logrus.Fields{"package": "controllers"})
@@ -19,7 +18,7 @@ var log = logging.Log.WithFields(logrus.Fields{"package": "controllers"})
 // txAbort carries an error response that has already been written to the client. model.Error returns nil once the
 // response is written, so returning it directly from a transaction callback tells the transaction machinery to commit
 // the very write the response is reporting as failed; wrapping it in an error that machinery can see is what rolls the
-// transaction back. It is shared by transaction and goquTransaction so both layers keep identical semantics.
+// transaction back.
 type txAbort struct {
 	response error
 }
@@ -36,12 +35,9 @@ func txError(ctx echo.Context, errStr string, status int) error {
 
 // Server defines the REST API of the qms
 type Server struct {
-	Router *echo.Echo
-	DB     *sql.DB
-	// GoquDB is the query layer the /v1 handlers use. It replaces GORMDB; both
-	// are present only while the rewrite is in progress.
+	Router         *echo.Echo
+	DB             *sql.DB
 	GoquDB         *db.Database
-	GORMDB         *gorm.DB
 	Service        string
 	Title          string
 	Version        string
@@ -50,8 +46,7 @@ type Server struct {
 }
 
 // goquTransaction runs fn inside a database transaction, unwrapping the response written by any txError call within it
-// so that echo sees the handler's real return value. It replaces the GORM helper that every /v1 handler used before the
-// rewrite; the handlers that still drive a GORM transaction do so directly and write no response from inside it.
+// so that echo sees the handler's real return value.
 func (s Server) goquTransaction(fn func(tx *goqu.TxDatabase) error) error {
 	tx, err := s.GoquDB.Begin()
 	if err != nil {

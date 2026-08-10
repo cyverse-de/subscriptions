@@ -9,6 +9,10 @@ import (
 	"github.com/doug-martin/goqu/v9"
 )
 
+const (
+	PlanNameBasic = "Basic"
+)
+
 // The columns backing model.Plan, model.PlanQuotaDefault and model.PlanRate. goqu fails a scan when a returned column
 // has no matching struct field, so the column lists are always spelled out rather than selected with a wildcard. The
 // quota default columns are qualified because their query joins resource_types, which has columns of the same name.
