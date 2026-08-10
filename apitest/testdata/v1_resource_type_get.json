@@ -1,0 +1,9 @@
+{
+  "result": {
+    "consumable": true,
+    "id": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb",
+    "name": "cpu.hours",
+    "unit": "cpu hours"
+  },
+  "status": "OK"
+}

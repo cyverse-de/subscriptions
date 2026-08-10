@@ -1,0 +1,9 @@
+{
+  "result": {
+    "consumable": true,
+    "id": "<uuid>",
+    "name": "test.gadgets",
+    "unit": "gizmos"
+  },
+  "status": "OK"
+}
