@@ -267,7 +267,8 @@ func TestBulkSubscriptionEndpoints(t *testing.T) {
 		if !ok {
 			t.Fatalf("unexpected response shape: %s", got.body)
 		}
-		if listed, _ := result["subscriptions"].([]any); len(listed) != 0 {
+		listed, ok := result["subscriptions"].([]any)
+		if !ok || len(listed) != 0 {
 			t.Errorf("listed subscriptions = %d, want 0", len(listed))
 		}
 		if total, _ := result["total"].(float64); total != 1 {

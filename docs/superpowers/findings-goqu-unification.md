@@ -1260,3 +1260,120 @@ from the one the guideline names, and it would separate
 `loadSubscriptionDetailsBatch` from the four read functions that are its only
 callers. It would also collide with the rename above, which is the more
 valuable move and should go first. Recorded as a judgment, not an oversight.
+
+## `internal/qmsapi/db` moved from parameterized SQL to string-interpolated SQL
+
+**The behavior:** every dataset built in `internal/qmsapi/db` now renders its
+literal values directly into the SQL text instead of sending them as bind
+parameters. GORM sent all of these as bind parameters; the goqu conversion did
+not preserve that.
+
+**Why:** goqu's prepared-statement mode is off by default —
+`defaultPrepared` is declared `false` and never reassigned outside
+`SetDefaultPrepared` (`goqu/v9@v9.19.0/prepared.go:5`), and `Bool()` returns
+that package variable whenever a dataset expresses no per-call preference
+(`prepared.go:26`). Nothing in this repo calls `SetDefaultPrepared` or
+`.Prepared(true)`:
+
+```
+$ grep -rn "SetDefaultPrepared\|Prepared(" --include='*.go' .
+(no output)
+```
+
+So every dataset in the service renders with `literalString`
+(`sqlgen/expression_sql_generator.go:330-345`), which writes the value inline
+between quote runes rather than emitting a placeholder.
+
+**The escaping is one rule, and it depends on a server setting.** goqu's only
+defined escape is `'` → `''`, via the dialect's `EscapedRunes` map
+(`sqlgen/sql_dialect_options.go:557-559`) consulted by `literalString`. The
+Postgres dialect (`dialect/postgres/postgres.go:9`) overrides only
+`PlaceHolderFragment`, for the `$1`-style placeholders prepared queries would
+use — it adds nothing to `EscapedRunes`. A single `'` → `''` rule fully closes
+the string **only while PostgreSQL's `standard_conforming_strings` is `on`**.
+With it off, PostgreSQL itself treats a literal as a `\`-escape string, so a
+trailing backslash in an interpolated value escapes the closing quote instead
+of being written literally, and the statement keeps consuming the SQL text
+that follows — a working injection primitive that `'` → `''` alone does not
+close.
+
+**What reaches the SQL text this way:** usernames on nearly every `/v1`
+route, the `search` parameter on `GET /v1/subscriptions`
+(`internal/qmsapi/db/subscriptions_goqu.go:622`), plan and resource-type
+names, and `metadata` on usage writes. Secondary effects even when the value
+is otherwise harmless: these values land verbatim in `pg_stat_statements` and
+server logs, and query-plan reuse is defeated because every distinct value
+produces a distinct statement text.
+
+**Why this did not block the merge:**
+
+- It is inherent to using goqu at all, not something this branch introduced.
+  The service's pre-existing top-level `db/` layer (the non-`/v1` routes) has
+  always built its datasets the same way — this branch makes `internal/qmsapi/db`
+  *consistent* with code that was already shipping, rather than adding a novel
+  exposure.
+- On a default-configured PostgreSQL, it is not exploitable:
+  `standard_conforming_strings` has defaulted to `on` since PostgreSQL 9.1.
+- It is not hypothetical that the precondition can occur, which is the reason
+  to record rather than dismiss it: a PostgreSQL instance with
+  `standard_conforming_strings = off` has been observed in this project's own
+  fleet, on the `sw-cacti` deployment, where it silently mangled backslash
+  escapes in `de-database` migration regexes. That is a different database
+  from the one this service talks to, and no exploitation of this service is
+  claimed — but "some instance in this fleet has run with the setting off" is
+  an observed fact, not a theoretical configuration.
+
+**Follow-up to evaluate, not to do here:** `goqu.SetDefaultPrepared(true)` in
+`main.go` is a one-line change, but it would also change the emitted SQL for
+the routes that already use goqu (the top-level `db/` layer), so it needs its
+own verification pass — golden diffs, a check that every scanned type still
+round-trips through bind parameters — rather than being folded into this
+branch's "reproduce current behavior exactly" scope. An alternative or
+complement that doesn't touch query generation at all: assert
+`standard_conforming_strings = on` at startup and fail fast if it isn't,
+turning the precondition for exploitability into a deployment-time check.
+
+**Two near-misses that were chased and cleared, recorded so nobody re-hunts
+them:**
+
+- **Empty `IN` lists** are not a silent-wrong-answer risk: goqu renders one as
+  `IN ()`, which PostgreSQL rejects as a syntax error, not a query that
+  quietly matches nothing or everything. Every batch helper in the converted
+  layer guards it with an explicit `len(...) == 0` early return before
+  building the query: `resourceTypesByID` (`resource_types_goqu.go:21`),
+  `usersByID` (`user_goqu.go:62`), `plansByID` (`plan_goqu.go:142`),
+  `planRatesByID` (`plan_goqu.go:171`), `loadPlanDetailsBatch`
+  (`plan_goqu.go:69`), `loadSubscriptionDetailsBatch`
+  (`subscriptions_goqu.go:317`), and both grouping loaders
+  (`subscriptions_goqu.go:401`, `:445`). Because the unguarded failure is loud,
+  a future missed guard fails a test rather than shipping silently.
+- **`First()` → bare `ScanStruct`** loses GORM's implicit `ORDER BY <primary
+  key> LIMIT 1` (see "Converting a GORM `First()` to `ScanStruct`" above), but
+  every converted single-row lookup in the layer filters on a
+  uniquely-constrained column, so which row `ScanStruct` picks is not in
+  question. The two lookups that don't filter on a unique column —
+  `GetActiveSubscription` and `GetActivePlanRate` — carry an explicit
+  `Order(...).Limit(1)` instead.
+
+## `count(*)`-shaped queries discarding `found` is a convention, not a bug
+
+A minor was raised during the branch flagging `HasActiveSubscription`
+(`subscriptions_goqu.go:270`) for discarding the `found` bool `ScanValContext`
+returns, as if it were an outlier among the converted single-row lookups. On
+inspection it is not: every `count(*)`-shaped query in the converted layer
+discards `found` the same way — `planExists` (`plan_goqu.go:277`) and the two
+`COUNT(*)` scans in `subscriptions_goqu.go` (`:509`, `:631`), alongside
+`HasActiveSubscription` (`:270`) itself.
+
+The reason is the same in all four: an aggregate with no `GROUP BY` always
+returns exactly one row, whether or not anything matched the `WHERE` clause
+(`count(*)` over zero matching rows is a row containing `0`, not zero rows),
+so `found` is always `true` and carries no information. The single-row
+*lookups* — `GetSubscriptionDetails`, `GetActivePlanRate`, and the rest that
+filter down to at most one real row — all check `found`, because for them a
+`false` is the only signal that nothing matched.
+
+That is a coherent two-rule convention: check `found` on a lookup, ignore it
+on a bare aggregate. Recorded here so the next reader doesn't "fix"
+`HasActiveSubscription` (or `planExists`, or either `COUNT(*)` scan) by adding
+a dead `if !found` branch.

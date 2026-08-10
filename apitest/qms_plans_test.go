@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// apitest/plans_test.go declares a function-local basicPlanID with the same
-// value inside TestAddPlanQuotaDefaults. That shadows this one rather than
-// colliding with it, so both compile — but remove the local one as part of this
-// task so there is a single declaration in the package.
 const (
 	basicPlanID   = "99e47c22-950a-11ec-84a4-406c8f3e9cbb"
 	unknownPlanID = "00000000-0000-0000-0000-000000000000"
