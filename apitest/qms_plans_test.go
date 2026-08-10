@@ -165,3 +165,24 @@ func TestActivePlanRateWithNoRateInEffect(t *testing.T) {
 		t.Errorf("the response still carries a result: %s", got.body)
 	}
 }
+
+// A driver error must not reach the response body. The unscannable resource
+// type makes the listing's scan fail, which is the same class of failure --
+// lib/pq's own message -- that a constraint violation produces on a write path.
+// The caller learns which operation failed and nothing about the schema.
+func TestResourceTypeListingDatabaseErrorIsNotLeaked(t *testing.T) {
+	resetDB(t)
+	unscannableResourceType(t, "test.unscannable")
+
+	got := do(t, http.MethodGet, "/v1/resource-types", "")
+	if got.status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", got.status, got.body)
+	}
+	assertNoDatabaseDetail(t, got)
+
+	// The operation that failed is the part of the old message worth keeping.
+	errMsg, _ := mustDecode(t, got)["error"].(string)
+	if errMsg != "unable to list the resource types" {
+		t.Errorf("error = %q, want %q", errMsg, "unable to list the resource types")
+	}
+}

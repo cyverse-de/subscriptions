@@ -3,6 +3,7 @@ package apitest
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -155,4 +156,32 @@ func queryInt(t *testing.T, query string, args ...any) int {
 		t.Fatalf("query failed: %s\nquery: %s", err, query)
 	}
 	return value
+}
+
+// databaseDetail are fragments only a driver error carries. Bare table names
+// are deliberately not on this list: "subscriptions" and "users" are ordinary
+// words in a sanitized message like "unable to list the user's subscriptions",
+// so matching them would flag the safe messages rather than the leaks.
+var databaseDetail = []string{
+	"pq:",
+	"SQLSTATE",
+	"violates",
+	"constraint",
+	"Scan error",
+	"sql/driver",
+	"column index",
+}
+
+// assertNoDatabaseDetail fails when a response body leaks the driver's own
+// error text. A 500 body should say which operation failed and nothing else:
+// table, index and constraint names describe the schema to anyone who can
+// provoke an error.
+func assertNoDatabaseDetail(t *testing.T, got response) {
+	t.Helper()
+	body := string(got.body)
+	for _, fragment := range databaseDetail {
+		if strings.Contains(body, fragment) {
+			t.Errorf("response leaks database detail %q: %s", fragment, body)
+		}
+	}
 }

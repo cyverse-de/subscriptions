@@ -1702,3 +1702,89 @@ two behaviors. Covered instead by
 contains the term literally. Against the pre-fix code the backslash case fails
 with `matched username = "ab"`; against a wrongly-ordered fix the percent case
 fails with `matched username = "a\b"`.
+
+## The converted controllers returned raw driver error text in 500 bodies
+
+**Observed behavior:** every `/v1` handler passed the error it got from the
+database layer straight into the response, via `txError(ctx, err.Error(), 500)`
+or `model.Error(ctx, err.Error(), 500)`. A caller who provoked a failure got
+lib/pq's own message: table names, index names, column positions, the `pq:`
+prefix. `GET /v1/resource-types` against a row the scan cannot decode answered
+
+```
+unable to list resource types: sql: Scan error on column index 3, name
+"consumable": sql/driver: couldn't convert <nil> (<nil>) into type bool
+```
+
+`CLAUDE.md` is explicit about this: log the real error server-side, return a
+generic message.
+
+**FIXED on `goqu-deferred-fixes`.** Two helpers in
+`internal/qmsapi/controllers/util.go` — `dbError` and `txDBError`, the latter
+for use inside a transaction callback where the response has to be wrapped so
+the transaction rolls back — log the error and return only a description of the
+operation that failed (`"unable to list the resource types"`). `usages.go` has
+a third, `usageError`, because its sites carry both kinds of error; see below.
+
+**Where the line was drawn.** The distinction is *who composed the message*,
+not what the status is:
+
+- **Sanitized** — an error returned by a `qmsdb.*` call (or by the transaction
+  wrapper) that the handler has already tested against every typed error it
+  knows about and matched none. Whatever is left is a driver error wrapped by
+  the db layer, and it reaches the caller as a 500.
+- **Kept** — anything the service composed itself: request binding and
+  validator output, `query.Validate*QueryParam` failures, the path-parameter
+  extractors, `fmt.Sprintf` messages the handler builds, and the typed
+  sentinels a handler explicitly matched (`qmsdb.ErrNotFound`,
+  `qmsdb.ErrResourceTypeConflict`, `qmsdb.ErrEmptySlice`, and the
+  `ErrInvalid*` set in `usages.go`). These are meaningful to the caller, and
+  several are pinned by goldens.
+
+Two cases needed a branch rather than a blanket rule, and both were found by
+existing tests failing rather than by reading:
+
+- **`ErrEmptySlice` is composed, not a driver error.** `SavePlanQuotaDefaults`
+  and `SavePlanRates` return it for a request body whose list is empty — the
+  service's own complaint, reproducing GORM, and pinned by
+  `TestPlanWritesWithEmptyInput` with the exact string
+  `unable to save the plan quota defaults: empty slice found`. Both handlers now
+  match it with `errors.Is` and return `err.Error()` unchanged, falling through
+  to `txDBError` only for a real failure. Blanket-sanitizing these two sites
+  broke that test, which is how the case was caught.
+- **`usages.go` sites carry either kind.** `httpStatusCode` classifies the
+  `ErrInvalid*`/`ErrUserNotFound` sentinels as 400/404 and everything else as
+  500, so the same `model.Error` call was returning both a composed message and
+  a driver message. `usageError` returns `err.Error()` when the classification
+  is not 500 and delegates to `dbError` when it is, which keeps
+  `usage_add_bad_update_type.json`'s `invalid update type: MULTIPLY` intact.
+
+**Deliberately left alone:** `subscriptions.go`'s sort-field invariant
+(`sort field name inconsistency detected...`) is a 500 but is composed and
+names nothing about the schema, and `plans.go`'s in-memory
+`ResourceTypeList.GetResourceTypeByName` failure is a 400 composed by the
+`model` package.
+
+**The example in the review's report is no longer reachable.** It cited
+`POST /v1/plans/{plan_id}/quota-defaults` with two entries sharing a resource
+type and effective date, returning pq's `duplicate key value violates unique
+constraint "plan_quota_defaults_resource_type_plan_effective_date_index"`.
+`NewPlanQuotaDefaultList.Validate` (`internal/qmsapi/httpmodel/new_plan.go:157`)
+now rejects that body with a 400 before the insert, and the handler separately
+checks the incoming defaults against the plan's existing ones, so the unique
+index is unreachable through that route. The leak was real at the other sites;
+the coverage below provokes it through a scan failure instead.
+
+**No golden moved, and none could:** every sanitized site produces a 500, and
+no golden in `apitest/testdata/` pins a 500 body — the pinned error bodies are
+all 400, 404 or 409, which is exactly the kept set. Covered by
+`TestResourceTypeListingDatabaseErrorIsNotLeaked` (`apitest/qms_plans_test.go`),
+and by an added assertion on the existing
+`TestListUserSubscriptionsReportsADatabaseFailure`
+(`apitest/qms_subscriptions_test.go`), which already provoked a driver error and
+checked only the status. Both use `assertNoDatabaseDetail`
+(`apitest/fixtures_test.go`), which greps the body for driver markers — `pq:`,
+`SQLSTATE`, `violates`, `constraint`, `Scan error`, `sql/driver`, `column
+index`. Bare table names are deliberately **not** on that list: "subscriptions"
+and "users" are ordinary words in a sanitized message like `unable to list the
+user's subscriptions`, so matching them would flag the fix rather than the bug.

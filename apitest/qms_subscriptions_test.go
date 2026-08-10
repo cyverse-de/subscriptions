@@ -71,6 +71,14 @@ func TestListUserSubscriptionsReportsADatabaseFailure(t *testing.T) {
 	if got.status != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500; body: %s", got.status, got.body)
 	}
+
+	// The scan failure names the column and the Go type it could not fill; the
+	// caller gets the operation that failed instead.
+	assertNoDatabaseDetail(t, got)
+	errMsg, _ := mustDecode(t, got)["error"].(string)
+	if errMsg != "unable to list the user's subscriptions" {
+		t.Errorf("error = %q, want %q", errMsg, "unable to list the user's subscriptions")
+	}
 }
 
 // PUT /v1/users/{username}/{plan_name} backs both the admin and the

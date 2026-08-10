@@ -41,7 +41,7 @@ func (s Server) ListResourceTypes(ctx echo.Context) error {
 	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
 		resourceTypes, err := qmsdb.ListResourceTypes(context, tx)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to list the resource types")
 		}
 
 		log.Debug("found resource types to return")
@@ -91,7 +91,7 @@ func (s Server) AddResourceType(ctx echo.Context) error {
 		if errors.Is(err, qmsdb.ErrResourceTypeConflict) {
 			return txError(ctx, err.Error(), http.StatusConflict)
 		} else if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to save the resource type")
 		}
 
 		return model.Success(ctx, populatedResourceType, http.StatusOK)
@@ -133,8 +133,7 @@ func (s Server) GetResourceTypeDetails(ctx echo.Context) error {
 			msg := fmt.Sprintf("resource type not found: %s", resourceTypeID)
 			return txError(ctx, msg, http.StatusNotFound)
 		} else if err != nil {
-			msg := fmt.Sprintf("unable to look up the resource type: %s", err)
-			return txError(ctx, msg, http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the resource type")
 		}
 
 		log.Debug("found resource type information to return")
@@ -193,7 +192,7 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 			msg := fmt.Sprintf("resource type not found: %s", resourceTypeID)
 			return txError(ctx, msg, http.StatusNotFound)
 		} else if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the resource type")
 		}
 
 		log.Debug("verified that the resource type exists")
@@ -202,7 +201,7 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 		// here, so only a real collision is a conflict; a failed lookup is a server error.
 		homonym, err := qmsdb.GetResourceTypeByName(context, tx, inboundResourceType.Name)
 		if err != nil && !errors.Is(err, qmsdb.ErrNotFound) {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to check whether the resource type name is already in use")
 		} else if err == nil && *homonym.ID != *existingResourceType.ID {
 			msg := fmt.Sprintf("a resource type with the given name already exists: %s", inboundResourceType.Name)
 			return txError(ctx, msg, http.StatusConflict)
@@ -214,7 +213,7 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 		existingResourceType.Consumable = inboundResourceType.Consumable
 		err = qmsdb.UpdateResourceType(context, tx, *existingResourceType)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to update the resource type")
 		}
 
 		return model.Success(ctx, existingResourceType, http.StatusOK)

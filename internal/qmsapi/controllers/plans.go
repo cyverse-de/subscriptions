@@ -44,7 +44,7 @@ func (s Server) GetAllPlans(ctx echo.Context) error {
 	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
 		plans, err := qmsdb.ListPlans(context, tx)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to list the plans")
 		}
 
 		log.Debug("listing plans from the database")
@@ -89,7 +89,7 @@ func (s Server) GetPlanByID(ctx echo.Context) error {
 			msg := fmt.Sprintf("plan ID %s not found", planID)
 			return txError(ctx, msg, http.StatusNotFound)
 		} else if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the plan")
 		}
 
 		log.Debug("successfully looked up plan to return")
@@ -138,7 +138,7 @@ func (s Server) AddPlan(ctx echo.Context) error {
 		// Make sure that a plan with the same name doesn't already exist.
 		planNameExists, err := qmsdb.CheckPlanNameExistence(context, tx, plan.Name)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to check whether the plan name is already in use")
 		} else if planNameExists {
 			return txError(ctx, fmt.Sprintf("a plan named `%s` already exists", plan.Name), http.StatusBadRequest)
 		}
@@ -150,7 +150,7 @@ func (s Server) AddPlan(ctx echo.Context) error {
 				msg := fmt.Sprintf("resource type not found: %s", planQuotaDefault.ResourceType.Name)
 				return txError(ctx, msg, http.StatusBadRequest)
 			} else if err != nil {
-				return txError(ctx, err.Error(), http.StatusInternalServerError)
+				return txDBError(ctx, err, "unable to look up the resource type")
 			}
 			dbPlan.PlanQuotaDefaults[i].ResourceType = *resourceType
 
@@ -161,7 +161,7 @@ func (s Server) AddPlan(ctx echo.Context) error {
 		// Add the plan to the database.
 		err = qmsdb.SavePlan(context, tx, &dbPlan)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to save the plan")
 		}
 
 		log.Debug("successfully added plan to the database")
@@ -210,7 +210,7 @@ func (s Server) GetActivePlanRate(ctx echo.Context) error {
 		// Verify that the plan exists.
 		exists, err := qmsdb.CheckPlanExistence(context, tx, planID)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the plan")
 		} else if !exists {
 			msg := fmt.Sprintf("plan ID %s not found", planID)
 			return txError(ctx, msg, http.StatusNotFound)
@@ -222,7 +222,7 @@ func (s Server) GetActivePlanRate(ctx echo.Context) error {
 			msg := fmt.Sprintf("no active rate found for plan ID %s", planID)
 			return txError(ctx, msg, http.StatusNotFound)
 		} else if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the active plan rate")
 		}
 
 		return model.Success(ctx, activePlanRate, http.StatusOK)
@@ -270,7 +270,7 @@ func (s Server) GetActiveQuotaDefaults(ctx echo.Context) error {
 		// Verify that the plan exists.
 		exists, err := qmsdb.CheckPlanExistence(context, tx, planID)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the plan")
 		} else if !exists {
 			msg := fmt.Sprintf("plan ID %s not found", planID)
 			return txError(ctx, msg, http.StatusNotFound)
@@ -279,7 +279,7 @@ func (s Server) GetActiveQuotaDefaults(ctx echo.Context) error {
 		// Look up the active plan quota defaults.
 		activePlanQuotaDefaults, err := qmsdb.GetActivePlanQuotaDefaults(context, tx, planID)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the active plan quota defaults")
 		}
 
 		return model.Success(ctx, activePlanQuotaDefaults, http.StatusOK)
@@ -339,7 +339,7 @@ func (s Server) AddPlanQuotaDefaults(ctx echo.Context) error {
 			msg := fmt.Sprintf("plan ID %s not found", planID)
 			return txError(ctx, msg, http.StatusNotFound)
 		} else if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the plan")
 		}
 
 		// Convert the request body to the equivalent database model and insert the plan ID into each object.
@@ -351,7 +351,7 @@ func (s Server) AddPlanQuotaDefaults(ctx echo.Context) error {
 		// Retireve the list of resource types from the database.
 		resourceTypeList, err := qmsdb.ListResourceTypes(context, tx)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to list the resource types")
 		}
 
 		// Plug the actual resource types into each plan quota default.
@@ -381,10 +381,13 @@ func (s Server) AddPlanQuotaDefaults(ctx echo.Context) error {
 			}
 		}
 
-		// Save the list of plan quota defaults.
+		// Save the list of plan quota defaults. An empty list is refused by the service rather than the database, so
+		// that message is the caller's own input described back to them and is safe to return.
 		err = qmsdb.SavePlanQuotaDefaults(context, tx, planQuotaDefaults)
-		if err != nil {
+		if errors.Is(err, qmsdb.ErrEmptySlice) {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
+		} else if err != nil {
+			return txDBError(ctx, err, "unable to save the plan quota defaults")
 		}
 
 		// Look up the plan with the new plan quota defaults included and return it in the response.
@@ -393,7 +396,7 @@ func (s Server) AddPlanQuotaDefaults(ctx echo.Context) error {
 			msg := fmt.Sprintf("plan ID %s not found after saving it", planID)
 			return txError(ctx, msg, http.StatusInternalServerError)
 		} else if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the plan after saving the quota defaults")
 		}
 		return model.Success(ctx, plan, http.StatusOK)
 	})
@@ -451,7 +454,7 @@ func (s Server) AddPlanRates(ctx echo.Context) error {
 			msg := fmt.Sprintf("plan ID %s not found", planID)
 			return txError(ctx, msg, http.StatusNotFound)
 		} else if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the plan")
 		}
 
 		// Convert the list of plan rates to the corresponding DB model.
@@ -474,10 +477,13 @@ func (s Server) AddPlanRates(ctx echo.Context) error {
 			planRates[i].PlanID = &planID
 		}
 
-		// Save the list of plan rates.
+		// Save the list of plan rates. As with the quota defaults above, an empty list is the service's own complaint
+		// about the request body rather than a database failure.
 		err = qmsdb.SavePlanRates(context, tx, planRates)
-		if err != nil {
+		if errors.Is(err, qmsdb.ErrEmptySlice) {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
+		} else if err != nil {
+			return txDBError(ctx, err, "unable to save the plan rates")
 		}
 
 		// Look up the plan with the new plan quota defaults included and return it in the response.
@@ -486,7 +492,7 @@ func (s Server) AddPlanRates(ctx echo.Context) error {
 			msg := fmt.Sprintf("plan ID %s not found after saving it", planID)
 			return txError(ctx, msg, http.StatusInternalServerError)
 		} else if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the plan after saving the rates")
 		}
 		return model.Success(ctx, plan, http.StatusOK)
 	})

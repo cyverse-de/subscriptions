@@ -48,6 +48,16 @@ func httpStatusCode(err error) int {
 	}
 }
 
+// usageError reports err to the caller with the status httpStatusCode assigns it. An error that matches none of the
+// sentinels is a database or driver failure, whose message names tables, indexes and constraints, so only the
+// sentinel-matched errors -- which the service composed itself and the caller can act on -- keep their own message.
+func usageError(ctx echo.Context, err error, attempted string) error {
+	if status := httpStatusCode(err); status != http.StatusInternalServerError {
+		return model.Error(ctx, err.Error(), status)
+	}
+	return dbError(ctx, err, attempted)
+}
+
 func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 	username := strings.TrimSuffix(usage.Username, s.UsernameSuffix)
 	if username == "" {
@@ -170,7 +180,7 @@ func (s Server) AddUsages(ctx echo.Context) error {
 
 	if err = s.addUsage(context, &usage); err != nil {
 		log.Error(err)
-		return model.Error(ctx, err.Error(), httpStatusCode(err))
+		return usageError(ctx, err, "unable to record the usage")
 	}
 
 	log.Debugf("added usage inforamtion %+v", usage)
@@ -203,9 +213,8 @@ func (s Server) GetAllUsageOfUser(ctx echo.Context) error {
 		return err
 	})
 	if err != nil {
-		sCode := httpStatusCode(err)
 		log.Error(err)
-		return model.Error(ctx, err.Error(), sCode)
+		return usageError(ctx, err, "unable to look up the usages")
 	}
 
 	log.Info("successfully found usages")
@@ -237,9 +246,8 @@ func (s Server) GetAllUsageUpdatesForUser(ctx echo.Context) error {
 		return err
 	})
 	if err != nil {
-		sCode := httpStatusCode(err)
 		log.Error(err)
-		return model.Error(ctx, err.Error(), sCode)
+		return usageError(ctx, err, "unable to look up the usage updates")
 	}
 
 	log.Info("successfully found updates")
