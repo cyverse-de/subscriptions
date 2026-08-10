@@ -14,6 +14,31 @@ import (
 // is always spelled out rather than selected with a wildcard.
 var resourceTypeColumns = []any{"id", "name", "unit", "consumable"}
 
+// resourceTypesByID looks up the given resource types and indexes them by identifier. It backs the association loads
+// that GORM performed with Preload, which issued exactly this query and matched the rows up in Go.
+func resourceTypesByID(ctx context.Context, tx *goqu.TxDatabase, ids []string) (map[string]*model.ResourceType, error) {
+	byID := make(map[string]*model.ResourceType, len(ids))
+	if len(ids) == 0 {
+		return byID, nil
+	}
+
+	resourceTypes := []*model.ResourceType{}
+	err := tx.From(t.RT).
+		Select(resourceTypeColumns...).
+		Where(goqu.C("id").In(ids)).
+		Executor().
+		ScanStructsContext(ctx, &resourceTypes)
+	if err != nil {
+		return nil, fmt.Errorf("unable to look up resource types: %w", err)
+	}
+
+	for _, resourceType := range resourceTypes {
+		byID[*resourceType.ID] = resourceType
+	}
+
+	return byID, nil
+}
+
 // GetResourceTypeByName looks up the resource type with the given name. It returns an error matching ErrNotFound when no
 // resource type has that name.
 func GetResourceTypeByName(ctx context.Context, tx *goqu.TxDatabase, name string) (*model.ResourceType, error) {

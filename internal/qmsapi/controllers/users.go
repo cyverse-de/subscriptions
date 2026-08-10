@@ -66,7 +66,7 @@ func (s Server) GetSubscriptionDetails(ctx echo.Context) error {
 		var err error
 
 		// Look up or insert the user.
-		user, err := db.GetUser(context, tx, username)
+		user, err := db.GetUserGORM(context, tx, username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -74,7 +74,7 @@ func (s Server) GetSubscriptionDetails(ctx echo.Context) error {
 		log.Debugf("found user %s in db", user.Username)
 
 		// Look up or create the user plan.
-		subscription, err := db.GetActiveSubscriptionDetails(context, tx, user.Username)
+		subscription, err := db.GetActiveSubscriptionDetailsGORM(context, tx, user.Username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -157,7 +157,7 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 		}
 
 		// Load the user's current subscription, creating a new subscription if necessary.
-		subcription, err := db.GetActiveSubscription(ctx, tx, username)
+		subcription, err := db.GetActiveSubscriptionGORM(ctx, tx, username)
 		if err != nil {
 			log.Error(err)
 			return txError(c, err.Error(), http.StatusInternalServerError)
@@ -176,7 +176,7 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 		}
 
 		// Load the subscription details.
-		details, err := db.GetSubscriptionDetails(ctx, tx, *subcription.ID)
+		details, err := db.GetSubscriptionDetailsGORM(ctx, tx, *subcription.ID)
 		if err != nil {
 			log.Error(err)
 			return txError(c, err.Error(), http.StatusInternalServerError)
@@ -210,7 +210,7 @@ func (s Server) AddUser(ctx echo.Context) error {
 
 		// Either add the user to the database or look up the existing user
 		// information.
-		user, err := db.GetUser(context, tx, username)
+		user, err := db.GetUserGORM(context, tx, username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -219,7 +219,7 @@ func (s Server) AddUser(ctx echo.Context) error {
 
 		// GetActiveSubscription will automatically subscribe the user to the basic
 		// plan if not subscribed already.
-		_, err = db.GetActiveSubscription(context, tx, user.Username)
+		_, err = db.GetActiveSubscriptionGORM(context, tx, user.Username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -306,14 +306,14 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 		var err error
 
 		// Either add the user to the database or look up the existing user information.
-		user, err := db.GetUser(context, tx, username)
+		user, err := db.GetUserGORM(context, tx, username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		log.Debug("found user in the database")
 
 		// Verify that a plan with the given name exists.
-		plan, err := db.GetPlan(context, tx, planName)
+		plan, err := db.GetPlanGORM(context, tx, planName)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -341,14 +341,14 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 		}
 
 		// Subscribe the user to the plan.
-		subscription, err := db.SubscribeUserToPlan(context, tx, user, plan, opts)
+		subscription, err := db.SubscribeUserToPlanGORM(context, tx, user, plan, opts)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		log.Debug("finished adding the new subscription")
 
 		// Load the subscription details.
-		details, err := db.GetSubscriptionDetails(context, tx, *subscription.ID)
+		details, err := db.GetSubscriptionDetailsGORM(context, tx, *subscription.ID)
 		if err != nil {
 			log.Error(err)
 			return txError(ctx, err.Error(), http.StatusInternalServerError)

@@ -700,3 +700,119 @@ package, matching `app/app.go`, which already imports it that way.
 remaining controller files still import it bare; Tasks 12-14 should switch each
 one as they convert it, rather than in a separate sweep, so the alias change
 travels with the conversion it protects.
+
+## Task 12: `GetActiveSubscriptionDetails` drags in seven more query functions, not zero
+
+The brief scoped Task 12 as "two query functions": `UpsertUsage` and
+`GetActiveSubscriptionDetails`. The second one is a two-line wrapper, and its
+transitive closure is what the task actually is:
+
+```
+GetActiveSubscriptionDetails
+├── GetActiveSubscription          (subscriptions join users, activeNow, First)
+│   └── SubscribeUserToDefaultPlan
+│       ├── GetUser                (users upsert)
+│       ├── GetPlan                (plans + quota defaults + rates)
+│       └── SubscribeUserToPlan    (subscriptions insert + cascaded quotas insert)
+└── GetSubscriptionDetails         (subscription + 9 GORM preloads)
+```
+
+None of these could be left on GORM, because the "convert each handler whole"
+rule forbids a request holding both kinds of transaction. **Tasks 13-15 should
+expect the same shape**: a `/v1` query function that looks small usually sits on
+top of GORM's `Preload`/association machinery, and every association it loads is
+another goqu query to write. Sizing one of these tasks by counting the function
+names in the brief will underestimate it by roughly an order of magnitude.
+
+The functions this task converted, all under the coexist-then-delete pattern
+(goqu takes the canonical name, GORM gets a `GORM` suffix): `GetUser`,
+`UserExists`, `GetPlan`, `SubscribeUserToPlan`, `SubscribeUserToDefaultPlan`,
+`GetActiveSubscription`, `GetSubscriptionDetails`,
+`GetActiveSubscriptionDetails`, `UpsertUsage`. Three queries that lived inline in
+`controllers/usages.go` moved into the db package as `GetUpdateOperationByName`,
+`SaveUpdate` and `ListUpdatesForUser` — the first because the ErrNotFound rule
+says absence is translated inside a query function, never in a handler, and the
+other two to keep the file's queries in one layer.
+
+### Capture the GORM SQL before writing the goqu, don't infer it
+
+The reliable way to translate a `Preload` graph is to read the statements GORM
+actually emits rather than reason about what it ought to emit. Temporarily give
+`InitGORMConnection` (`internal/qmsapi/db/gorm.go`) a
+`&gorm.Config{Logger: logger.Default.LogMode(logger.Info)}`, run the goldens
+that cover the handler, and every statement is in the test output. Do the same
+for the converted code afterwards with `goquDB.Logger(...)` in `db.New`
+(`db/db.go`) and diff the two lists. Both edits are one line and get reverted
+before committing.
+
+Two things that capture turned up which inference would have missed:
+
+- GORM's `First()` appends the primary key to an **existing** `ORDER BY` rather
+  than replacing it, so `GetActiveSubscription` really emits
+  `ORDER BY subscriptions.effective_start_date desc, subscriptions.id LIMIT 1`.
+  The effective start date is not unique, so dropping the `id` tie-break would
+  make the chosen subscription arbitrary for a user with two subscriptions
+  starting at the same instant. The goqu version keeps both terms.
+- GORM's cascaded association insert for a new subscription's quotas emits
+  `ON CONFLICT ("id") DO UPDATE SET "subscription_id"="excluded"."subscription_id"`.
+  That is dead weight, not behavior: the id is a fresh `uuid_generate_v1()`, so
+  the conflict can never fire. The goqu version is a plain multi-row insert.
+
+### `model` structs needed `db` tags, and the untagged default is a silent mismatch
+
+goqu maps a struct field to a column by its `db` tag, falling back to
+`strings.ToLower(FieldName)` (`goqu/v9@v9.19.0/internal/util/column_map.go`).
+The `/v1` model structs had no `db` tags, so `Subscription.EffectiveStartDate`
+mapped to a column named `effectivestartdate`, `PlanQuotaDefault.PlanID` to
+`planid`, and so on. Task 11 did not hit this because every
+`model.ResourceType` field happens to lowercase to its real column name.
+
+Every field of every model struct the goqu layer scans now carries an explicit
+`db` tag, and each association field carries `db:"-"`. The `-` matters twice
+over: goqu treats an untagged **struct** field as a nested record and would look
+for columns like `resourcetype.id`, and it treats an untagged slice field as a
+leaf column. Associations are loaded by their own query and assigned in Go,
+exactly as `Preload` did, so none of them is ever selected.
+
+The tags are additive — GORM reads `gorm` tags and field names, and the JSON
+encoding is untouched — but they are a shared edit to `internal/qmsapi/model`,
+so Tasks 13-15 should check whether a struct they need is already tagged before
+adding tags of their own.
+
+### `GetPlan` now reports a missing plan as `ErrNotFound` rather than `(nil, nil)`
+
+The GORM `GetPlan` returned `(nil, nil)` for an unknown plan name, and
+`controllers/users.go:316` depends on that: it renders its own
+`plan name '%s' not found` 400 when the returned plan is nil. The goqu
+replacement follows the sentinel convention instead, so **Task 14 must convert
+that nil check into `errors.Is(err, qmsdb.ErrNotFound)` when it repoints
+`users.go` at the goqu function**, or a bad plan name will become a 500 with a
+different body. `users.go` still calls `GetPlanGORM` today, so nothing has moved
+yet.
+
+The one path where the change is already live is
+`SubscribeUserToDefaultPlan`, which looks up the `Basic` plan. Under GORM a
+missing Basic plan produced a nil dereference and a panic-derived 500; under
+goqu it produces an ordinary error and a 500 with a legible message. Basic is
+seeded by the migrations and no route deletes plans, so the case is
+unreachable — recorded because it is a real, if theoretical, difference in the
+converted code.
+
+### Two new Go assertions, because the cases they cover cannot be goldened
+
+`apitest/qms_usages_test.go` adds:
+
+- `TestEmptyUsageListingsAreArrays` — `GET /v1/usages/{username}` and
+  `GET /v1/usages/{username}/updates` for a user with neither. This is the
+  nil-slice hazard recorded above, and it is not hypothetical here: the usages
+  array is `subscription.Usages`, which `GET /v1/usages/{username}` returns
+  directly, and `model.Subscription.Usages` has no `omitempty`.
+- `TestUsageListingSubscribesAnUnknownUser` — `GET /v1/usages/{username}` for a
+  user the service has never seen. This read path *enrols* the user in the basic
+  plan, and **no test covered the enrolment**: every other test reaches the
+  route through `createUser`, which enrols them via `PUT /v1/users/{username}`
+  first. The goqu `SubscribeUserToDefaultPlan` would have shipped unexercised.
+
+Both were confirmed to pass unchanged against the `goqu-baseline` tag in a
+scratch worktree before the conversion was trusted, which is what makes them
+characterization tests rather than descriptions of the new code.

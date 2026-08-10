@@ -13,8 +13,8 @@ const (
 	PlanNameBasic = "Basic"
 )
 
-// GetPlan looks up the plan with the given name.
-func GetPlan(ctx context.Context, db *gorm.DB, planName string) (*model.Plan, error) {
+// GetPlanGORM looks up the plan with the given name.
+func GetPlanGORM(ctx context.Context, db *gorm.DB, planName string) (*model.Plan, error) {
 	wrapMsg := fmt.Sprintf("unable to look up plan name '%s'", planName)
 	var err error
 	var plan = model.Plan{}

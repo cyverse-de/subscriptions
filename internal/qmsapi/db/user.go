@@ -9,8 +9,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// GetUser looks up the user details, adding the user to the database if necessary.
-func GetUser(ctx context.Context, db *gorm.DB, username string) (*model.User, error) {
+// GetUserGORM looks up the user details, adding the user to the database if necessary.
+func GetUserGORM(ctx context.Context, db *gorm.DB, username string) (*model.User, error) {
 	wrapMsg := "unable to look up or add the user"
 	var err error
 
@@ -29,8 +29,8 @@ func GetUser(ctx context.Context, db *gorm.DB, username string) (*model.User, er
 	return &user, nil
 }
 
-// UserExists determines whether or not the user exists in the database.
-func UserExists(ctx context.Context, db *gorm.DB, username string) (bool, error) {
+// UserExistsGORM determines whether or not the user exists in the database.
+func UserExistsGORM(ctx context.Context, db *gorm.DB, username string) (bool, error) {
 	wrapMsg := "unable to determine whether user exists"
 	var err error
 
