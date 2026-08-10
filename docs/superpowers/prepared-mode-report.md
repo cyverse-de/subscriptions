@@ -339,9 +339,11 @@ real caller produces.
 Recommended above, and implemented in the review-fix pass — see "Deduplicating
 the batch loader IDs" further down for the before/after parameter counts.
 Bounding `limit` with a `lte=` check is the other half, and is the one that
-turns a 500 into a 400; still open, and recorded as a follow-up rather than
-done here (it's an observable API change, which deserves its own decision
-about the ceiling value).
+turns a 500 into a 400; it has since been closed in a follow-up commit —
+`limit` is now validated `gte=0,lte=1000`
+(`internal/qmsapi/controllers/subscriptions.go:288`), rejecting rather than
+clamping. See `docs/superpowers/findings-goqu-unification.md` for the ceiling
+rationale.
 
 ## Gate results
 
@@ -399,10 +401,11 @@ under `apitest/testdata/` was touched.
 - **`Executor()` over the `ScanVal*` convenience methods** costs a little
   verbosity to avoid an implicit `LIMIT 1` that would have altered the SQL. Worth
   it here, where the whole exercise is "the responses must not change".
-- **The parameter-limit exposure is real but not closed.** A caller passing
-  `?limit=40000` against a large database would now get a 500 where it
-  previously got a very slow query. Judged out of scope to fix on this branch,
-  and recorded above and in the findings doc rather than left implicit.
+- **The parameter-limit exposure was real but is now closed.** A caller passing
+  `?limit=40000` against a large database would have gotten a 500 where it
+  previously got a very slow query. Judged out of scope for this commit, it was
+  closed in a follow-up commit on the same branch that bounds `limit` to 1000;
+  recorded above and in the findings doc.
 - **Not verified: behavior under `standard_conforming_strings = off`.** The
   change removes the dependency on that setting by construction — no value is
   interpolated any more, so goqu's escaping is never consulted — but no test was
@@ -561,11 +564,11 @@ is the whole of the improvement: the ceiling-hit point for the previously-worst
 statement (`resourceTypesByID` at ~2N via quotas alone, ~32,768 subscriptions
 in one page) moves from a five-figure `limit` to effectively unreachable,
 since it now scales with the number of distinct resource types rather than the
-page size. `GET /v1/subscriptions`'s `limit` parameter remains unbounded
+page size. `GET /v1/subscriptions`'s `limit` parameter was left unbounded here
 (`internal/qmsapi/controllers/subscriptions.go:288`, `gte=0` only) — recorded
-as a follow-up in `findings-goqu-unification.md`, not fixed here, since adding
-an `lte=` bound is an observable API change that deserves its own decision
-about the ceiling value.
+as a follow-up in `findings-goqu-unification.md` — and has since been bounded
+`lte=1000` in a follow-up commit on this branch, since it was an observable
+API change that deserved its own decision about the ceiling value.
 
 ### Gate results (review-fix pass)
 

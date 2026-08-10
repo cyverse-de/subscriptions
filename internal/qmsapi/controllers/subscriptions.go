@@ -285,7 +285,12 @@ func (s Server) ListSubscriptions(ctx echo.Context) error {
 		return model.Error(ctx, err.Error(), http.StatusBadRequest)
 	}
 	var limit int32 = 50
-	limit, err = query.ValidateIntQueryParam(ctx, "limit", &limit, "gte=0")
+	// 1000 caps the response size: listings return fully-loaded subscription
+	// objects (user, plan, quota defaults, rates, quotas, usages), so a page
+	// this large is already a multi-megabyte response against a default page
+	// size of 50. It also keeps the batch loaders' bind-parameter counts well
+	// under PostgreSQL's 65535 prepared-statement limit.
+	limit, err = query.ValidateIntQueryParam(ctx, "limit", &limit, "gte=0", "lte=1000")
 	if err != nil {
 		log.Error(err)
 		return model.Error(ctx, err.Error(), http.StatusBadRequest)

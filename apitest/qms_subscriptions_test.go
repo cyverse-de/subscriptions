@@ -253,6 +253,23 @@ func TestBulkSubscriptionEndpoints(t *testing.T) {
 		assertGolden(t, "subscriptions_list_empty", got, http.StatusOK)
 	})
 
+	// The listing caps limit at 1000 to bound both the prepared-statement bind
+	// parameter count and the response size; a caller over the cap gets a 400
+	// rather than a silently truncated page.
+	t.Run("limit at the upper bound succeeds", func(t *testing.T) {
+		got := do(t, http.MethodGet, "/v1/subscriptions?offset=0&limit=1000", "")
+		if got.status != http.StatusOK {
+			t.Fatalf("status = %d, body %s", got.status, got.body)
+		}
+	})
+
+	t.Run("limit above the upper bound is rejected", func(t *testing.T) {
+		got := do(t, http.MethodGet, "/v1/subscriptions?offset=0&limit=1001", "")
+		if got.status != http.StatusBadRequest {
+			t.Fatalf("status = %d, body %s", got.status, got.body)
+		}
+	})
+
 	// A limit of zero asks for the total alone. It can't be pinned with the
 	// empty-listing golden, whose total is zero too, and the two query layers
 	// disagree about it: GORM emitted LIMIT 0, while goqu's Limit clears the
