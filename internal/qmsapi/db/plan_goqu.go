@@ -142,6 +142,7 @@ func plansByID(ctx context.Context, tx *goqu.TxDatabase, ids []string) (map[stri
 	if len(ids) == 0 {
 		return byID, nil
 	}
+	ids = uniqueIDs(ids)
 
 	plans := []*model.Plan{}
 	err := tx.From(t.Plans).
@@ -171,6 +172,7 @@ func planRatesByID(ctx context.Context, tx *goqu.TxDatabase, ids []string) (map[
 	if len(ids) == 0 {
 		return byID, nil
 	}
+	ids = uniqueIDs(ids)
 
 	planRates := []*model.PlanRate{}
 	err := tx.From(t.PlanRates).

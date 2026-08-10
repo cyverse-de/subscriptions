@@ -62,6 +62,7 @@ func usersByID(ctx context.Context, tx *goqu.TxDatabase, ids []string) (map[stri
 	if len(ids) == 0 {
 		return byID, nil
 	}
+	ids = uniqueIDs(ids)
 
 	users := []*model.User{}
 	err := tx.From(t.Users).

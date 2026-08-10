@@ -166,17 +166,66 @@ $ grep -rn "RegisterDialect" .../goqu/v9@v9.19.0/dialect/postgres/postgres.go
 
 goqu falls back to its default dialect for an unrecognized name, silently. So
 **every goqu query this service has ever issued was rendered with goqu's default
-dialect, not the PostgreSQL one.** That was invisible for as long as it was:
-the default dialect's output happens to be valid PostgreSQL for the statements
-this service builds (same `"` quoting, and `RETURNING` and `ON CONFLICT` are
-supported), and its placeholder is only reached in prepared mode. Interpolation
-was hiding it.
+dialect, not the PostgreSQL one.** That was invisible for as long as it was —
+not merely by luck, but because the two dialects were provably rendering
+byte-identical SQL in interpolated mode. Verified against the pinned version
+rather than assumed:
+
+```
+$ grep -A4 "^func DialectOptions" .../goqu/v9@v9.19.0/dialect/postgres/postgres.go
+func DialectOptions() *goqu.SQLDialectOptions {
+	do := goqu.DefaultDialectOptions()
+	do.PlaceHolderFragment = []byte("$")
+	do.IncludePlaceholderNum = true
+	return do
+}
+
+$ grep -rn "PlaceHolderFragment\|IncludePlaceholderNum" .../goqu/v9@v9.19.0/sqlgen/*.go
+sql_dialect_options.go:179:  PlaceHolderFragment []byte
+sql_dialect_options.go:195:  IncludePlaceholderNum bool
+expression_sql_generator.go:212:  b.Write(esg.dialectOptions.PlaceHolderFragment)
+expression_sql_generator.go:213:  if esg.dialectOptions.IncludePlaceholderNum {
+
+$ grep -n "placeHolderSQL" .../goqu/v9@v9.19.0/sqlgen/expression_sql_generator.go
+211:func (esg *expressionSQLGenerator) placeHolderSQL(b sb.SQLBuilder, i interface{}) {
+283,292,305,314,323,332,350:  esg.placeHolderSQL(b, ...)   # each call is the single statement inside `if b.IsPrepared() { ... }`
+```
+
+`goqu/v9@v9.19.0/dialect/postgres/postgres.go` returns `DefaultDialectOptions()`
+with exactly two fields changed — `PlaceHolderFragment` and
+`IncludePlaceholderNum` — and both are consumed only by
+`sqlgen/expression_sql_generator.go`'s `placeHolderSQL`, which is reachable
+only from call sites guarded by `IsPrepared()` (`literalNil`, `literalBool`,
+`literalTime`, `literalFloat`, `literalInt`, `literalString`, and one more, all
+in the same file). In interpolated mode they are dead fields. The pre-change
+SQL was therefore **byte-identical, not merely compatible**: the dialect bug
+had zero behavioral blast radius before prepared mode, and fixing it was a
+precondition for prepared mode rather than a behavior change. (The 69 goldens
+being unchanged is consistent with this but isn't the proof — goldens compare
+HTTP responses, not the SQL text each dialect emitted, and would have passed
+just the same if the two dialects happened to produce equivalent-but-different
+SQL. The library-source reading above is what actually establishes
+byte-identical.)
+
+The consequence that motivates keeping the dialect registration and the
+prepared-mode flag co-located: **the blank import used to be decorative and is
+now load-bearing.** Before this branch, `db.New` asked for the nonexistent
+`"postgresql"` dialect, so the import's absence was harmless — goqu fell back
+to its default dialect regardless, and that default renders the same SQL as
+postgres in interpolated mode, per the proof above. After this branch, a
+binary that links `db` without the dialect import gets prepared mode *plus*
+the default dialect: `?` placeholders sent to `lib/pq`, which fails every
+query. `db/tables/tables.go` now carries `_
+"github.com/doug-martin/goqu/v9/dialect/postgres"` alongside the `init()` that
+calls `SetDefaultPrepared(true)`, so the two are reached through the same
+import every query-building package already has in its closure. `main.go` and
+`apitest/harness_test.go` keep their own copies of the same blank import —
+redundant now, left alone as a separate judgment call about explicit-at-the-
+entrypoint versus duplication.
 
 Fixed in commit 2 (`goqu.New("postgres", dbconn)`), because prepared mode cannot
 be enabled without it. It is folded into that commit rather than split out for
-that reason. The 69 goldens are unchanged across the dialect switch, which is
-the evidence that the previously-wrong dialect was not also producing
-differently-*behaving* SQL.
+that reason.
 
 ## Evidence that parameters are actually being bound
 
@@ -287,13 +336,12 @@ defaults or 21,800 rates in one plan body to reach the cap. Both are
 request-body-driven, so a client could construct one, but neither is a shape any
 real caller produces.
 
-Recommendation, not done here (it is a behavior-neutral optimization, and this
-branch's scope is the interpolation fix): deduplicate the ID slices before
-building the `IN` lists. It raises the ceiling by whatever the duplication factor
-is — large, since `plansByID` currently sends N copies of a handful of plan IDs
-— and shrinks the statements on every request, not just the pathological ones.
+Recommended above, and implemented in the review-fix pass — see "Deduplicating
+the batch loader IDs" further down for the before/after parameter counts.
 Bounding `limit` with a `lte=` check is the other half, and is the one that
-turns a 500 into a 400.
+turns a 500 into a 400; still open, and recorded as a follow-up rather than
+done here (it's an observable API change, which deserves its own decision
+about the ceiling value).
 
 ## Gate results
 
@@ -361,3 +409,189 @@ under `apitest/testdata/` was touched.
   written that runs the suite against a server with the setting off. That would
   be a genuinely stronger proof than the parameter-binding evidence above, and it
   is cheap to add later if wanted.
+
+## Review-fix pass
+
+Three items from the review of the two commits above, applied as one follow-up
+commit. The verdict was merge-with-fixes; this section is the record of the
+fixes, kept in the same file because it's the same audit trail.
+
+### Co-locating the dialect registration with `SetDefaultPrepared`
+
+Before this branch, `_ "github.com/doug-martin/goqu/v9/dialect/postgres"` was
+decorative — `db.New` asked for the nonexistent `"postgresql"` dialect, so
+goqu fell back to its default dialect regardless of whether the import was
+linked in, and (per the byte-identical-SQL proof below) that fallback rendered
+the same SQL as postgres while interpolated. After this branch, the import is
+load-bearing: prepared mode plus the wrong dialect sends `?` placeholders to
+`lib/pq`, which rejects every query. The import lived only in `main.go:27` and
+`apitest/harness_test.go:39` — both entrypoints, neither of which the `db` or
+`internal/qmsapi/db` packages route through. A hypothetical `db/db_test.go` in
+package `db` calling `db.New(...)` directly would have linked prepared mode
+without the dialect and failed every query with `pq: syntax error at or near
+")"`, and passed before this branch.
+
+Fixed by adding the same blank import to `db/tables/tables.go`, next to the
+`init()` that calls `SetDefaultPrepared(true)`, with a comment explaining why
+the two must travel together. `db/tables` is already the common ancestor every
+query-building package imports (see "Where `SetDefaultPrepared(true)` went,
+and why" above), so this makes dialect registration and prepared mode reach
+every such package through the same import, not two. `main.go` and
+`apitest/harness_test.go` keep their copies — redundant now, left alone as a
+separate call about explicit-at-the-entrypoint versus duplication.
+
+### The library-source proof behind the rewritten dialect claim
+
+The report previously said the default dialect "happens to be valid PostgreSQL
+for the statements this service builds" and cited the 69 unchanged goldens as
+evidence. Goldens compare HTTP response bodies, not SQL text, so they're the
+wrong instrument for this question — two dialects producing different-but-
+equivalent SQL would pass the same goldens. Replaced with the provable claim,
+verified against the pinned `goqu/v9 v9.19.0` source in this branch's module
+cache before writing it (not taken on say-so):
+
+```
+$ grep -n "goqu" go.mod
+	github.com/doug-martin/goqu/v9 v9.19.0
+
+$ cat .../goqu/v9@v9.19.0/dialect/postgres/postgres.go
+package postgres
+
+import "github.com/doug-martin/goqu/v9"
+
+func DialectOptions() *goqu.SQLDialectOptions {
+	do := goqu.DefaultDialectOptions()
+	do.PlaceHolderFragment = []byte("$")
+	do.IncludePlaceholderNum = true
+	return do
+}
+
+func init() {
+	goqu.RegisterDialect("postgres", DialectOptions())
+}
+
+$ grep -rn "PlaceHolderFragment\|IncludePlaceholderNum" .../goqu/v9@v9.19.0/ --include="*.go"
+dialect/mysql/mysql.go:      opts.PlaceHolderFragment / opts.IncludePlaceholderNum   (mysql's own values)
+dialect/sqlite3/sqlite3.go:  opts.PlaceHolderFragment / opts.IncludePlaceholderNum   (sqlite3's own values)
+dialect/sqlserver/sqlserver.go: opts.PlaceHolderFragment / opts.IncludePlaceholderNum (sqlserver's own values)
+dialect/postgres/postgres.go: do.PlaceHolderFragment / do.IncludePlaceholderNum       (postgres's own values)
+sqlgen/sql_dialect_options.go: field declarations + the "?" zero-value default
+sqlgen/expression_sql_generator.go:212-213: the only read site (both fields)
+
+$ sed -n '210,217p' .../goqu/v9@v9.19.0/sqlgen/expression_sql_generator.go
+func (esg *expressionSQLGenerator) placeHolderSQL(b sb.SQLBuilder, i interface{}) {
+	b.Write(esg.dialectOptions.PlaceHolderFragment)
+	if esg.dialectOptions.IncludePlaceholderNum {
+		b.WriteStrings(strconv.FormatInt(int64(b.CurrentArgPosition()), 10))
+	}
+	b.WriteArg(i)
+}
+
+$ grep -n "placeHolderSQL" .../goqu/v9@v9.19.0/sqlgen/expression_sql_generator.go
+211:func (esg *expressionSQLGenerator) placeHolderSQL(...)
+283:		esg.placeHolderSQL(b, nil)     # inside literalNil,    guarded by `if b.IsPrepared()`
+292:		esg.placeHolderSQL(b, bl)      # inside literalBool,   guarded by `if b.IsPrepared()`
+305:		esg.placeHolderSQL(b, t)       # inside literalTime,   guarded by `if b.IsPrepared()`
+314:		esg.placeHolderSQL(b, f)       # inside literalFloat,  guarded by `if b.IsPrepared()`
+323:		esg.placeHolderSQL(b, i)       # inside literalInt,    guarded by `if b.IsPrepared()`
+332:		esg.placeHolderSQL(b, s)       # inside literalString, guarded by `if b.IsPrepared()`
+350:		esg.placeHolderSQL(b, bs)      # inside literalBytes,  guarded by `if b.IsPrepared()`
+```
+
+Every one of the seven `placeHolderSQL` call sites is the single statement
+inside an `if b.IsPrepared() { ...; return }` block in
+`expression_sql_generator.go`. `dialect/postgres/postgres.go` changes exactly
+two fields relative to `DefaultDialectOptions()`, and both are consumed only
+there. So in interpolated mode — everything before commit 2 — the two fields
+are dead: never read, because `IsPrepared()` was false on every path. The
+pre-change SQL was therefore byte-identical between the two dialects, not
+merely compatible. The dialect bug had zero behavioral blast radius before
+prepared mode, and fixing it was a precondition for prepared mode, not a
+behavior change riding along with it. This is now the wording in the "latent
+bug" section above; the hedged "happens to be valid" phrasing and the
+goldens-as-evidence sentence are gone.
+
+### Deduplicating the batch loader IDs
+
+`loadSubscriptionDetailsBatch` (`internal/qmsapi/db/subscriptions_goqu.go`)
+built `userIDs`, `planIDs`, `planRateIDs`, and `subscriptionIDs` with one entry
+per subscription row, and `quotasBySubscriptionID` /
+`usagesBySubscriptionID` each appended one resource-type ID per quota/usage
+*row* — so a page of N subscriptions with two quota rows and two usage rows
+apiece sent roughly 4N resource-type parameters to look up what is, in
+practice, a couple of distinct UUIDs. Every one of these loaders indexes its
+query results into a `map[string]T` keyed by ID, so a duplicate input
+contributes nothing to the result — deduplicating is behavior-neutral by
+construction.
+
+Fixed with one helper, `uniqueIDs` (`internal/qmsapi/db/db.go`), that
+deduplicates a `[]string` while preserving first-occurrence order, called at
+the top of the four ID-indexed batch loaders (`usersByID`, `plansByID`,
+`planRatesByID`, `resourceTypesByID` — after the existing `len(ids) == 0`
+early return) and at the top of the two subscription-scoped loaders
+(`quotasBySubscriptionID`, `usagesBySubscriptionID`, on their
+`subscriptionIDs` parameter). Deduplicating inside the functions that build
+the `IN` list, rather than at the single call site that first assembles the
+slices, covers every current and future caller of these general-purpose
+loaders, not just `loadSubscriptionDetailsBatch`.
+
+**Before/after parameter counts**, computed with the actual `uniqueIDs` logic
+against a representative page shaped like a real listing: N subscriptions,
+each with a distinct user, one of 3 plans, one of 3 plan rates, and 2 quota
+rows + 2 usage rows each drawn from one of 2 resource types (matching "two
+distinct UUIDs" from the original analysis below):
+
+| IN list | N = 50 before | N = 50 after | N = 1000 before | N = 1000 after |
+|---|---|---|---|---|
+| `usersByID` | 50 | 50 | 1000 | 1000 |
+| `plansByID` | 50 | 3 | 1000 | 3 |
+| `planRatesByID` | 50 | 3 | 1000 | 3 |
+| `quotasBySubscriptionID` (subscription_id) | 50 | 50 | 1000 | 1000 |
+| `usagesBySubscriptionID` (subscription_id) | 50 | 50 | 1000 | 1000 |
+| `resourceTypesByID` (via quotas) | 100 | 2 | 2000 | 2 |
+| `resourceTypesByID` (via usages) | 100 | 2 | 2000 | 2 |
+
+`usersByID` and the subscription-scoped `IN` lists don't shrink in this
+scenario because each subscription genuinely has a distinct user and a
+distinct ID in a real listing — the dedup call is there for the case where
+that stops being true (e.g. a future caller reusing these general-purpose
+loaders), and costs nothing when it isn't. `plansByID`, `planRatesByID`, and
+both `resourceTypesByID` paths shrink to the number of distinct values, which
+is the whole of the improvement: the ceiling-hit point for the previously-worst
+statement (`resourceTypesByID` at ~2N via quotas alone, ~32,768 subscriptions
+in one page) moves from a five-figure `limit` to effectively unreachable,
+since it now scales with the number of distinct resource types rather than the
+page size. `GET /v1/subscriptions`'s `limit` parameter remains unbounded
+(`internal/qmsapi/controllers/subscriptions.go:288`, `gte=0` only) — recorded
+as a follow-up in `findings-goqu-unification.md`, not fixed here, since adding
+an `lte=` bound is an observable API change that deserves its own decision
+about the ceiling value.
+
+### Gate results (review-fix pass)
+
+| | `go test ./... -count=1` | `git diff goqu-baseline -- apitest/testdata/` | `golangci-lint run` |
+|---|---|---|---|
+| before the fixes (HEAD of the two commits above) | pass | empty | `0 issues.` |
+| after the fixes (this commit) | pass | empty | `0 issues.` |
+
+`go test ./... -count=1` output: `ok` for `apitest`, `app`, `errors`,
+`internal/qmsapi/model`; every other package reports `[no test files]`.
+`git diff goqu-baseline -- apitest/testdata/` is empty (0 lines). `golangci-lint
+run` (2.10.1, the version CI pins): `0 issues.`
+
+### Files changed (review-fix pass)
+
+```
+db/tables/tables.go                            postgres dialect blank import, co-located with SetDefaultPrepared
+internal/qmsapi/db/db.go                       uniqueIDs helper
+internal/qmsapi/db/user_goqu.go                usersByID dedupes ids
+internal/qmsapi/db/plan_goqu.go                plansByID, planRatesByID dedupe ids
+internal/qmsapi/db/resource_types_goqu.go      resourceTypesByID dedupes ids
+internal/qmsapi/db/subscriptions_goqu.go       quotasBySubscriptionID, usagesBySubscriptionID dedupe subscriptionIDs
+docs/superpowers/findings-goqu-unification.md  GET /v1/admin/subscriptions → GET /v1/subscriptions; dedup + limit follow-up recorded
+docs/superpowers/prepared-mode-report.md       this file
+```
+
+No route paths, methods, request shapes, or response shapes changed. Nothing
+under `apitest/testdata/` was touched. None of the bugs the findings doc
+deliberately parks for a separate branch were touched.

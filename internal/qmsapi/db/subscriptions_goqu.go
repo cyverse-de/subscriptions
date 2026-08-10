@@ -401,6 +401,7 @@ func quotasBySubscriptionID(
 	if len(subscriptionIDs) == 0 {
 		return bySubscription, nil
 	}
+	subscriptionIDs = uniqueIDs(subscriptionIDs)
 
 	quotas := []model.Quota{}
 	err := tx.From(t.Quotas).
@@ -445,6 +446,7 @@ func usagesBySubscriptionID(
 	if len(subscriptionIDs) == 0 {
 		return bySubscription, nil
 	}
+	subscriptionIDs = uniqueIDs(subscriptionIDs)
 
 	usages := []model.Usage{}
 	err := tx.From(t.Usages).

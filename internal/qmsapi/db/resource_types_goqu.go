@@ -21,6 +21,7 @@ func resourceTypesByID(ctx context.Context, tx *goqu.TxDatabase, ids []string) (
 	if len(ids) == 0 {
 		return byID, nil
 	}
+	ids = uniqueIDs(ids)
 
 	resourceTypes := []*model.ResourceType{}
 	err := tx.From(t.RT).

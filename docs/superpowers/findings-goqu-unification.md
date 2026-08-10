@@ -1366,11 +1366,14 @@ no longer needed to close this specific exposure, since nothing depends on
 goqu's escaping any more; it would only be defense in depth. The one new
 constraint prepared mode introduces is PostgreSQL's 65535-parameter ceiling
 per statement, which interpolation did not have — the analysis of which
-listings could approach it is in the report, and the short version is that
-`GET /v1/admin/subscriptions` accepts an unbounded `limit` and its batch
-loaders build undeduplicated `IN` lists, so a caller asking for tens of
-thousands of rows in one page could now get an error where it previously got
-a very large statement.
+listings could approach it is in the report. The batch loaders' `IN` lists are
+now deduplicated (`uniqueIDs` in `internal/qmsapi/db/db.go`), which raises the
+ceiling by a large factor since real pages repeat plan, plan-rate, and
+resource-type IDs heavily. Still open, and left for a separate decision:
+`GET /v1/subscriptions` accepts an unbounded `limit`
+(`internal/qmsapi/controllers/subscriptions.go:288`, validated only `gte=0`),
+so a caller can still ask for a page large enough to hit the ceiling on its
+own. Adding an `lte=` bound is an observable API change and wasn't made here.
 
 **Two near-misses that were chased and cleared, recorded so nobody re-hunts
 them:**
