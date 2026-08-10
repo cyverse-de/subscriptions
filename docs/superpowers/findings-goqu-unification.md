@@ -238,3 +238,88 @@ collapses this route onto the `/v1` implementation, or that refactors
 `getPlan` to use `ToQMSPlan()` for consistency with `listPlans`, would be a
 visible behavior change for any caller that starts depending on this route
 and needs to know it's fixing something rather than breaking something.
+
+## `PUT /users/{username}/usages`: the response drops the row's identity and audit fields
+
+**Observed behavior:** `apitest/testdata/goqu_usage_added.json` shows the
+returned `usage` object with `"uuid": ""`, `"created_at": null`,
+`"created_by": ""`, `"last_modified_at": null`, and `"last_modified_by": ""`
+— all zero values — even though the usage row this request just wrote (or
+updated) has real values for every one of those columns.
+
+**Root cause:** `addUsage` (`app/usages.go:76-153`) builds its response
+usage manually at `app/usages.go:134-143`:
+
+```go
+response.Usage = &qms.Usage{
+    Usage:          u,
+    SubscriptionId: subscription.ID,
+    ResourceType: &qms.ResourceType{
+        Uuid:       resourceType.ID,
+        Name:       resourceType.Name,
+        Unit:       resourceType.Unit,
+        Consumable: resourceType.Consumable,
+    },
+}
+```
+
+`u` here is a bare `float64` — the current usage value returned by
+`d.GetCurrentUsage` (`app/usages.go:128`), not the `db.Usage` row it comes
+from — so there is no row to read `Uuid`, `CreatedAt`, `CreatedBy`, or
+`LastModifiedBy`/`LastModifiedAt` from at the point this struct literal is
+built. `getUsages` (`app/usages.go:15-58`), the read-side handler for the
+same table, populates all five of these fields correctly
+(`app/usages.go:40-53`) because it builds its response from the actual
+`db.Usage` rows `d.SubscriptionUsages` returns, not from a derived scalar.
+
+**Golden that pins it:** `apitest/testdata/goqu_usage_added.json`
+(`TestGoquAddUsage` in `apitest/goqu_duplicates_test.go`). Still returns
+`http.StatusOK` — like the `GET /plans/{plan_id}` gap above, this is a
+response-shape omission, not an error.
+
+**Current blast radius:** `PUT /users/{username}/usages` is one of the six
+goqu routes kept without a verified caller (spec §Scope) — no caller was
+found across terrain, apps, app-exposer, resource-usage-api, or
+data-usage-api. As with `GET /summary/{user}`'s blanked `subscription_id`
+above, that bounds today's impact; it does not make the response correct. A
+caller that reads `uuid` off this response to reference the usage row
+later — the obvious thing to do with a primary key a create/update endpoint
+hands back — would get an empty string instead of an error, and a caller
+reading `created_at`/`last_modified_at` for display or auditing would get
+nothing where the sibling `GET` route would have given them a real
+timestamp.
+
+**Why this is recorded:** this task is exactly the point where the gap
+becomes visible — the route had no prior test, so nobody had looked at what
+it actually returns. Recording it here, in the same terms as the
+`GET /plans/{plan_id}` gap above, keeps the two shape-omission findings this
+task turned up consistent with each other rather than one being written down
+and the other only living in a report.
+
+## Golden-vs-`/v1`-counterpart comparison for the six retained goqu duplicates
+
+Each of the six goqu routes covered in `apitest/goqu_duplicates_test.go`
+duplicates an actively-called `/v1` route. This table records the structural
+differences between each pair's golden, since that comparison — not just
+"does the goqu route work" — is what a later decision about collapsing the
+duplicates needs.
+
+| goqu golden | `/v1` counterpart | comparison |
+|---|---|---|
+| `goqu_plans_list.json` (`GET /plans`) | `plans_list.json` (`GET /v1/plans`) | Same data, different envelope and field names. `/v1` wraps in `{"status": "OK", "result": [...]}`; goqu wraps in `{"header": {"map": {}}, "error": null, "plans": [...]}`. Within each plan, `/v1` uses `"id"` where goqu uses `"uuid"` (plan, quota default, plan rate, and resource type all rename this way). Otherwise the same fields, same values, same nesting. |
+| `goqu_plan_get.json` (`GET /plans/{id}`) | `plans_get_basic.json` (`GET /v1/plans/{id}`) | Same envelope/naming differences as above, **plus a real content gap**: goqu's `plan_rates` is `null` and every `plan_quota_defaults[].effective_date` is `null`, while `/v1`'s response has both fully populated. This is the `getPlan` handler bug recorded above — both routes read the same underlying data via `db.GetPlanByID`, but the goqu HTTP handler drops fields the `/v1` handler keeps. |
+| `goqu_plan_added.json` (`PUT /plans`) | `v1_plan_created.json` (`POST /v1/plans`) | Very different shape, not just renamed fields. `/v1`'s create returns almost nothing on success — `{"status": "OK", "result": "Success"}`, no plan data at all. goqu's `PUT /plans` returns the full created plan (`uuid`, `name`, `description`, empty `plan_quota_defaults`/`plan_rates` arrays for this request). A caller wanting the new plan's ID back would need the goqu route; `/v1` doesn't give it one. |
+| `goqu_quota_added.json` (`PUT /quotas`) | `quota_update_cpu_hours.json` (`POST /v1/users/{u}/plan/{rt}/quota`) | Not a like-for-like comparison as recorded, since the goqu side is the 500 error body above — but structurally, even on a success path these two return fundamentally different things. `/v1`'s quota-update endpoint returns the **entire subscription** (plan, plan_rate, all quotas, all usages, user), nested three levels deep. goqu's route is built to return just the single updated `quota` object. Collapsing these isn't a rename exercise — it changes what the caller gets back, from a subscription snapshot to a single record or vice versa. |
+| `goqu_usage_added.json` (`PUT /users/{u}/usages`) | `usage_add_set.json` (`POST /v1/usages`) | Very different shape. `/v1`'s usage-update endpoint returns a bare string message — `{"status": "OK", "result": "successfully updated the usage for: testuser"}` — no usage data at all. goqu's route returns a `usage` object (incomplete, per the finding above, but structured — `usage` value, `resource_type`, `subscription_id`). A caller wanting the resulting usage value back programmatically would need the goqu route; `/v1` only gives a human-readable message. |
+| `goqu_user_updates.json` (`GET /users/{u}/updates`) | `v1_usage_updates_single.json` (`GET /v1/usages/{u}/updates`) | Same data, different shape beyond the envelope. `/v1` uses `"resource_types"` (plural) as the key for the nested resource type object; goqu uses `"resource_type"` (singular). `/v1`'s `metadata` is `"{}"` (a JSON object literal as a string); goqu's is `""` (empty string) — a different default representation of "no metadata," not just a naming difference. Field-for-field naming otherwise lines up (`id`/`uuid`, `user`, `operation`, `value`, `value_type`, `effective_date`). |
+
+**Structural takeaway:** three of the six pairs (`plans_list`, `plan_get`
+modulo its bug, `user_updates`) are close enough that collapsing them onto
+one shape is mostly a field-rename exercise. The other three
+(`plan_added`, `quota_added`, `usage_added`) are not — the `/v1` write
+endpoints return bare success-message envelopes with no created/updated
+data, while the goqu routes return the actual object. Collapsing those three
+would either change what the `/v1` routes return today (a real behavior
+change for their actual callers) or drop what the goqu routes return
+(removing the reason to have kept them). Whoever makes the collapse call
+later needs to know that asymmetry going in.
