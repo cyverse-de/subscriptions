@@ -165,3 +165,76 @@ not an error).
 this branch's plan, so nobody translating a GORM query to goqu will pass
 through this code and rediscover it. Recording it here is the only way the
 knowledge survives past this task.
+
+## `PUT /quotas`: a resource type identified only by name produces a 500
+
+**Observed behavior:** the request body shape the wire contract documents —
+`AddQuotaRequest.Quota.ResourceType` identified by `name`/`unit`, no `uuid` —
+returns HTTP 500 with `{"error_code":"INTERNAL","message":"pq: invalid input
+syntax for type uuid: \"\""}`.
+
+**Root cause:** `addQuota` (`app/quotas.go:30-36`) passes
+`request.Quota.ResourceType.Uuid` straight to `d.UpsertQuota` as the
+`resource_type_id` column value, with no fallback to a name lookup:
+
+```go
+err = d.UpsertQuota(
+    ctx,
+    float64(request.Quota.Quota),
+    request.Quota.ResourceType.Uuid,
+    subscriptionID,
+    db.WithTX(tx),
+)
+```
+
+`PUT /plans`'s handler resolves the same situation correctly: `addPlan`
+(`app/plans.go:70-75`) calls `d.LookupResoureType`
+(`db/resourcetypes.go:117-129`), which falls back to a name lookup when `ID`
+is empty. `addQuota` has no equivalent call, so a caller that only knows the
+resource type's name — the only identification the task brief's read of the
+wire contract documents — sends an empty string as the UUID, which Postgres
+rejects at the `quotas.resource_type_id` column.
+
+**Golden that pins it:** `apitest/testdata/goqu_quota_added.json`
+(`TestGoquAddQuota` in `apitest/goqu_duplicates_test.go`), with `wantStatus`
+set to `http.StatusInternalServerError` to match the observed behavior rather
+than the brief's `http.StatusOK` expectation.
+
+**Why this is recorded despite having no known caller:** `PUT /quotas` is one
+of the six goqu routes being kept without a verified caller (spec §Scope);
+this task exists specifically to surface exactly this kind of latent bug
+before a caller shows up and hits it. Not a regression to fix on this
+branch — reproduce it, don't repair it.
+
+## `GET /plans/{plan_id}` (goqu route): `plan_rates` and `effective_date` are silently dropped
+
+**Observed behavior:** `goqu_plan_get.json` shows `"plan_rates": null` for a
+plan that has a rate (the Basic plan's `plan_rates` array is non-empty in
+both `goqu_plans_list.json` and the `/v1` counterpart
+`plans_get_basic.json`), and every entry in `plan_quota_defaults[].effective_date`
+is `null` even though the same field is a real timestamp everywhere else this
+plan appears (`goqu_plans_list.json`, `plans_get_basic.json`).
+
+**Root cause:** `getPlan` (`app/plans.go:132-166`) builds
+`response.Plan` by hand instead of calling `Plan.ToQMSPlan()`
+(`db/types.go:216-234`), which is what `listPlans` uses
+(`app/plans.go:27`). The manual construction never sets `PlanRates` at all —
+`plan.Rates`, which `db.GetPlanByID` does populate via `loadPlanDetails`
+(`db/plans.go:91-103, 142`) — is simply not read. Likewise, the
+`qms.QuotaDefault` literal it builds (`app/plans.go:153-162`) sets `Uuid`,
+`QuotaValue`, and `ResourceType` but never `EffectiveDate`, even though
+`q.EffectiveDate` (`db.PlanQuotaDefault`) holds a real value fetched by the
+same call. The data is fetched correctly; the handler's own response mapping
+drops it.
+
+**Golden that pins it:** `apitest/testdata/goqu_plan_get.json`
+(`TestGoquPlanReads/get_a_plan_by_ID`). Still returns `http.StatusOK` — this
+is a response-shape gap, not an error.
+
+**Why this is recorded:** `GET /plans/{plan_id}` (the goqu route, distinct
+from `/v1/plans/{id}`, which is unaffected and calls a different handler)
+had never been exercised by a test before this task. A later change that
+collapses this route onto the `/v1` implementation, or that refactors
+`getPlan` to use `ToQMSPlan()` for consistency with `listPlans`, would be a
+visible behavior change for any caller that starts depending on this route
+and needs to know it's fixing something rather than breaking something.

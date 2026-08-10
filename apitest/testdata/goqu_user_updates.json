@@ -1,0 +1,29 @@
+{
+  "error": null,
+  "header": {
+    "map": {}
+  },
+  "updates": [
+    {
+      "effective_date": "<timestamp>",
+      "metadata": "",
+      "operation": {
+        "name": "SET",
+        "uuid": "f1fa4a1e-9676-11ec-aa73-406c8f3e9cbb"
+      },
+      "resource_type": {
+        "consumable": true,
+        "name": "cpu.hours",
+        "unit": "cpu hours",
+        "uuid": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
+      },
+      "user": {
+        "username": "testuser",
+        "uuid": "<uuid>"
+      },
+      "uuid": "<uuid>",
+      "value": 12,
+      "value_type": "usages"
+    }
+  ]
+}

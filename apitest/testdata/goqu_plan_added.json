@@ -1,0 +1,13 @@
+{
+  "error": null,
+  "header": {
+    "map": {}
+  },
+  "plan": {
+    "description": "added through the goqu route",
+    "name": "Goqu Test Plan",
+    "plan_quota_defaults": [],
+    "plan_rates": [],
+    "uuid": "<uuid>"
+  }
+}
