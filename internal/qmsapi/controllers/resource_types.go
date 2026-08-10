@@ -38,7 +38,7 @@ func (s Server) ListResourceTypes(ctx echo.Context) error {
 
 	log := log.WithFields(logrus.Fields{"context": "listing resource types"})
 
-	return s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		resourceTypes, err := qmsdb.ListResourceTypes(context, tx)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
@@ -86,7 +86,7 @@ func (s Server) AddResourceType(ctx echo.Context) error {
 	resourceType.ID = nil
 
 	// Save the resource type.
-	return s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		populatedResourceType, err := qmsdb.SaveResourceType(context, tx, resourceType)
 		if errors.Is(err, qmsdb.ErrResourceTypeConflict) {
 			return txError(ctx, err.Error(), http.StatusConflict)
@@ -127,7 +127,7 @@ func (s Server) GetResourceTypeDetails(ctx echo.Context) error {
 	log.Debugf("extracted resource type ID %s", resourceTypeID)
 
 	// Look up the resource type.
-	return s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		resourceType, err := qmsdb.GetResourceTypeByID(context, tx, resourceTypeID)
 		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("resource type not found: %s", resourceTypeID)
@@ -184,7 +184,7 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 	log.Debug("extracted and validated the request body")
 
 	// Perform these steps in a transaction to ensure consistency.
-	return s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		var err error
 
 		// Verify that the resource type exists.

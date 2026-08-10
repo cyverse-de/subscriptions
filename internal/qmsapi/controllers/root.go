@@ -1,9 +1,11 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"maps"
 	"net/http"
 
 	"github.com/cyverse-de/go-mod/logging"
@@ -16,9 +18,9 @@ import (
 
 var log = logging.Log.WithFields(logrus.Fields{"package": "controllers"})
 
-// txAbort carries an error response that has already been written to the client. model.Error returns nil once the
-// response is written, so returning it directly from a transaction callback tells the transaction machinery to commit
-// the very write the response is reporting as failed; wrapping it in an error that machinery can see is what rolls the
+// txAbort carries an error response that has already been written. model.Error returns nil once the response is
+// written, so returning it directly from a transaction callback tells the transaction machinery to commit the very
+// write the response is reporting as failed; wrapping it in an error that machinery can see is what rolls the
 // transaction back.
 type txAbort struct {
 	response error
@@ -73,9 +75,13 @@ func rollback(tx *goqu.TxDatabase) {
 // so that echo sees the handler's real return value. The transaction is started with the request context so that a
 // caller that has already given up doesn't leave a goroutine waiting for a free connection.
 //
+// fn must not write the response: the caller owns it and reports the returned error itself, which is what lets
+// POST /v1/subscriptions record a per-item failure rather than failing the whole request. Handlers whose callback
+// produces the response use respondInTransaction instead.
+//
 // The transaction is committed and rolled back here rather than through goqu's (*TxDatabase).Wrap because Wrap
 // replaces the callback's error with the ROLLBACK error whenever ROLLBACK itself fails. That loses the txAbort marker
-// this unwraps, and reports transaction plumbing to the client in place of the failure the handler actually saw.
+// this unwraps, and reports transaction plumbing to the caller in place of the failure the handler actually saw.
 func (s Server) goquTransaction(ctx context.Context, fn func(tx *goqu.TxDatabase) error) error {
 	tx, err := s.GoquDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -94,6 +100,94 @@ func (s Server) goquTransaction(ctx context.Context, fn func(tx *goqu.TxDatabase
 	}
 
 	return tx.Commit()
+}
+
+// respondInTransaction runs fn inside a database transaction, buffering the response fn writes and sending it only
+// once the transaction has committed. Writing before COMMIT reports a write as successful over the wire and then
+// discards it if COMMIT fails, leaving the caller believing in a record that doesn't exist and with nothing to
+// prompt a retry.
+//
+// Because nothing reaches the client while the buffer is in place, every failure is answered with model.Error, so a
+// database outage is reported in the /v1 envelope that this API's consumers decode rather than in echo's.
+func (s Server) respondInTransaction(ctx echo.Context, fn func(tx *goqu.TxDatabase) error) error {
+	tx, err := s.GoquDB.BeginTx(ctx.Request().Context(), nil)
+	if err != nil {
+		log.Errorf("unable to start a transaction: %s", err)
+		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+	}
+
+	// The deferred restore covers the panic path, where the response has to be back in place for
+	// middleware.Recover's 500 to reach the client. Everything else restores it explicitly, before writing.
+	buffered := &bufferedResponse{header: make(http.Header)}
+	response := ctx.Response()
+	ctx.SetResponse(echo.NewResponse(buffered, s.Router))
+	defer ctx.SetResponse(response)
+
+	cbErr := runCallback(tx, fn)
+	ctx.SetResponse(response)
+
+	if cbErr != nil {
+		rollback(tx)
+
+		// txError asked for the rollback that just happened, so the response it buffered is the handler's real
+		// answer and describes a write that correctly never landed.
+		var abort txAbort
+		if errors.As(cbErr, &abort) {
+			if err := buffered.flush(response); err != nil {
+				return err
+			}
+			return abort.response
+		}
+
+		log.Errorf("the transaction was rolled back: %s", cbErr)
+		return model.Error(ctx, cbErr.Error(), http.StatusInternalServerError)
+	}
+
+	if err := tx.Commit(); err != nil {
+		// The buffered response reports a write that COMMIT has just discarded, so it is dropped rather than sent.
+		log.Errorf("unable to commit the transaction: %s", err)
+		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+	}
+
+	return buffered.flush(response)
+}
+
+// bufferedResponse collects a response in memory so that it can be sent, or discarded, once the transaction that
+// produced it has been resolved.
+type bufferedResponse struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (b *bufferedResponse) Header() http.Header {
+	return b.header
+}
+
+func (b *bufferedResponse) WriteHeader(status int) {
+	if b.status == 0 {
+		b.status = status
+	}
+}
+
+func (b *bufferedResponse) Write(body []byte) (int, error) {
+	if b.status == 0 {
+		b.status = http.StatusOK
+	}
+	return b.body.Write(body)
+}
+
+// flush sends the buffered response. A buffer with no status was never written to, which leaves the response to echo
+// exactly as an unbuffered handler that wrote nothing would have.
+func (b *bufferedResponse) flush(response *echo.Response) error {
+	if b.status == 0 {
+		return nil
+	}
+
+	maps.Copy(response.Header(), b.header)
+	response.WriteHeader(b.status)
+	_, err := response.Write(b.body.Bytes())
+	return err
 }
 
 // ServerInfo returns basic information about the server.

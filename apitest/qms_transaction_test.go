@@ -2,6 +2,7 @@ package apitest
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,6 +93,82 @@ func assertQMSError(t *testing.T, got response, wantStatus int) string {
 	return message
 }
 
+// failAtCommit installs a deferred constraint trigger that raises when the transaction inserting into the table
+// commits. Deferring it is what puts the failure after the handler has produced its answer, which is the ordering a
+// commit that fails on a lost connection or a serialization conflict would produce.
+const commitFailureMessage = "apitest deferred failure"
+
+func failAtCommit(t *testing.T, table string) {
+	t.Helper()
+
+	execSQL(t, `CREATE OR REPLACE FUNCTION apitest_fail_at_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			RAISE EXCEPTION '`+commitFailureMessage+`';
+		END $$`)
+	execSQL(t, `CREATE CONSTRAINT TRIGGER apitest_fail_at_commit AFTER INSERT ON `+table+`
+		DEFERRABLE INITIALLY DEFERRED
+		FOR EACH ROW EXECUTE FUNCTION apitest_fail_at_commit()`)
+
+	t.Cleanup(func() {
+		execSQL(t, `DROP TRIGGER IF EXISTS apitest_fail_at_commit ON `+table)
+		execSQL(t, `DROP FUNCTION IF EXISTS apitest_fail_at_commit()`)
+	})
+}
+
+// A write reported as successful and then thrown away by a failed COMMIT is the worst outcome available: the caller
+// records a plan that doesn't exist and nothing tells it to retry. The response is held back until the transaction
+// has committed for exactly this case.
+func TestCommitFailureIsNotReportedAsSuccess(t *testing.T) {
+	resetDB(t)
+	failAtCommit(t, "plans")
+
+	body := `{"name": "apitest.commit", "description": "a plan that never commits",` +
+		`"plan_quota_defaults": [{"quota_value": 1234,` +
+		`"resource_type": {"name": "cpu.hours", "unit": "cpu hours"},` +
+		`"effective_date": "` + effectiveDate + `"}],` +
+		`"plan_rates": [{"effective_date": "` + effectiveDate + `", "rate": 9.99}]}`
+	got := do(t, http.MethodPost, "/v1/plans", body)
+
+	message := assertQMSError(t, got, http.StatusInternalServerError)
+	if !strings.Contains(message, commitFailureMessage) {
+		t.Errorf("the error message does not report the commit failure: %s", message)
+	}
+
+	// The response and the database have to agree about whether the plan exists.
+	if count := queryInt(t, `SELECT count(*) FROM plans WHERE name = $1`, "apitest.commit"); count != 0 {
+		t.Errorf("plans named apitest.commit = %d, want 0", count)
+	}
+}
+
+// POST /v1/subscriptions reports each subscription's outcome in a 200, and a commit failure is one of the outcomes it
+// has to be able to report. Buffering the response would break that contract, so its per-item transactions run
+// through the wrapper that leaves the response to the handler.
+func TestCommitFailureIsReportedPerSubscription(t *testing.T) {
+	resetDB(t)
+	failAtCommit(t, "subscriptions")
+
+	body := fmt.Sprintf(`{"subscriptions": [{"username": %q, "plan_name": "Pro", "paid": true}]}`, testUser)
+	got := do(t, http.MethodPost, "/v1/subscriptions", body)
+
+	if got.status != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", got.status, http.StatusOK, got.body)
+	}
+
+	decoded := mustDecode(t, got)
+	results, isList := decoded["result"].([]any)
+	if !isList || len(results) != 1 {
+		t.Fatalf("result = %#v, want one entry; body: %s", decoded["result"], got.body)
+	}
+	entry, isObject := results[0].(map[string]any)
+	if !isObject {
+		t.Fatalf("the result entry is %#v, want an object", results[0])
+	}
+	reason, isString := entry["failure_reason"].(string)
+	if !isString || !strings.Contains(reason, commitFailureMessage) {
+		t.Errorf("failure_reason = %#v, want the commit failure; body: %s", entry["failure_reason"], got.body)
+	}
+}
+
 // txError writes its error response and then asks for a rollback, so a ROLLBACK that fails must not take the
 // handler's answer with it. goqu's Wrap replaces the callback's error with the rollback error, which discards the
 // marker that tells the wrapper a response has already been produced.
@@ -148,9 +225,10 @@ func TestTransactionsHonorTheRequestContext(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := serveWithContext(t, cancelled, http.MethodGet, testCase.path, 10*time.Second)
-			if got.status != http.StatusInternalServerError {
-				t.Errorf("status = %d, want %d; body: %s", got.status, http.StatusInternalServerError, got.body)
-			}
+
+			// A failure to BEGIN is still a /v1 response. Reporting it in echo's envelope instead would give a
+			// consumer that decodes "error" as a string a deserialization failure during the outage.
+			assertQMSError(t, got, http.StatusInternalServerError)
 		})
 	}
 }
