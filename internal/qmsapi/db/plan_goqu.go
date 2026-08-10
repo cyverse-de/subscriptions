@@ -51,37 +51,39 @@ func GetPlan(ctx context.Context, tx *goqu.TxDatabase, planName string) (*model.
 	return &plan, nil
 }
 
-// getPlanRateByID looks up the plan rate with the given identifier. It returns an error matching ErrNotFound when no
-// plan rate has that identifier.
-func getPlanRateByID(ctx context.Context, tx *goqu.TxDatabase, planRateID string) (*model.PlanRate, error) {
-	wrapMsg := fmt.Sprintf("unable to look up plan rate ID '%s'", planRateID)
-
-	var planRate model.PlanRate
-	found, err := tx.From(t.PlanRates).
-		Select(planRateColumns...).
-		Where(goqu.C("id").Eq(planRateID)).
-		Executor().
-		ScanStructContext(ctx, &planRate)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
-	}
-	if !found {
-		return nil, fmt.Errorf("%s: %w", wrapMsg, ErrNotFound)
-	}
-
-	return &planRate, nil
+// loadPlanDetails loads the quota defaults and rates for a plan.
+func loadPlanDetails(ctx context.Context, tx *goqu.TxDatabase, plan *model.Plan) error {
+	return loadPlanDetailsBatch(ctx, tx, []*model.Plan{plan})
 }
 
-// loadPlanDetails loads the quota defaults and rates for a plan. Both listings are sorted by effective date because
-// model.Plan's GetDefaultQuotaValues and GetActivePlanRate walk them in that order to find the currently active entry.
-func loadPlanDetails(ctx context.Context, tx *goqu.TxDatabase, plan *model.Plan) error {
-	// Initialized rather than declared nil so that a plan with no entries marshals as [] and not null: goqu only
-	// touches the destination once per row, where GORM's Find replaced it with an empty slice before reading any.
+// loadPlanDetailsBatch loads the quota defaults and rates for a set of plans, a table at a time rather than a plan at a
+// time, so that a listing costs the same number of statements however many plans it covers. Both listings are sorted by
+// effective date because model.Plan's GetDefaultQuotaValues and GetActivePlanRate walk them in that order to find the
+// currently active entry. Neither sort mentions the plan, because grouping the rows in Go preserves the relative order
+// of the rows belonging to any one plan.
+func loadPlanDetailsBatch(ctx context.Context, tx *goqu.TxDatabase, plans []*model.Plan) error {
+	if len(plans) == 0 {
+		return nil
+	}
+
+	planIDs := make([]string, 0, len(plans))
+	quotaDefaultsByPlan := make(map[string][]model.PlanQuotaDefault, len(plans))
+	planRatesByPlan := make(map[string][]model.PlanRate, len(plans))
+	for _, plan := range plans {
+		planIDs = append(planIDs, *plan.ID)
+
+		// Seeded with empty slices rather than left absent so that a plan with no entries marshals as [] and not null:
+		// goqu only touches the destination once per row, where GORM's Find replaced it with an empty slice before
+		// reading any.
+		quotaDefaultsByPlan[*plan.ID] = []model.PlanQuotaDefault{}
+		planRatesByPlan[*plan.ID] = []model.PlanRate{}
+	}
+
 	quotaDefaults := []model.PlanQuotaDefault{}
 	err := tx.From(t.PQD).
 		Select(planQuotaDefaultColumns...).
 		Join(t.RT, goqu.On(t.PQD.Col("resource_type_id").Eq(t.RT.Col("id")))).
-		Where(t.PQD.Col("plan_id").Eq(*plan.ID)).
+		Where(t.PQD.Col("plan_id").In(planIDs)).
 		Order(t.PQD.Col("effective_date").Asc(), t.RT.Col("name").Asc()).
 		Executor().
 		ScanStructsContext(ctx, &quotaDefaults)
@@ -101,22 +103,86 @@ func loadPlanDetails(ctx context.Context, tx *goqu.TxDatabase, plan *model.Plan)
 		if resourceType, ok := resourceTypes[*quotaDefaults[i].ResourceTypeID]; ok {
 			quotaDefaults[i].ResourceType = *resourceType
 		}
+		planID := *quotaDefaults[i].PlanID
+		quotaDefaultsByPlan[planID] = append(quotaDefaultsByPlan[planID], quotaDefaults[i])
 	}
-	plan.PlanQuotaDefaults = quotaDefaults
 
 	planRates := []model.PlanRate{}
 	err = tx.From(t.PlanRates).
 		Select(planRateColumns...).
-		Where(goqu.C("plan_id").Eq(*plan.ID)).
+		Where(goqu.C("plan_id").In(planIDs)).
 		Order(goqu.C("effective_date").Asc()).
 		Executor().
 		ScanStructsContext(ctx, &planRates)
 	if err != nil {
 		return fmt.Errorf("unable to look up the plan rates: %w", err)
 	}
-	plan.PlanRates = planRates
+	for _, planRate := range planRates {
+		planID := *planRate.PlanID
+		planRatesByPlan[planID] = append(planRatesByPlan[planID], planRate)
+	}
+
+	for _, plan := range plans {
+		plan.PlanQuotaDefaults = quotaDefaultsByPlan[*plan.ID]
+		plan.PlanRates = planRatesByPlan[*plan.ID]
+	}
 
 	return nil
+}
+
+// plansByID looks up the given plans, along with the quota defaults and rates of each one, and indexes them by
+// identifier. It backs the association loads that GORM performed with Preload, which issued exactly this query and
+// matched the rows up in Go.
+func plansByID(ctx context.Context, tx *goqu.TxDatabase, ids []string) (map[string]*model.Plan, error) {
+	byID := make(map[string]*model.Plan, len(ids))
+	if len(ids) == 0 {
+		return byID, nil
+	}
+
+	plans := []*model.Plan{}
+	err := tx.From(t.Plans).
+		Select(planColumns...).
+		Where(goqu.C("id").In(ids)).
+		Executor().
+		ScanStructsContext(ctx, &plans)
+	if err != nil {
+		return nil, fmt.Errorf("unable to look up plans: %w", err)
+	}
+
+	if err = loadPlanDetailsBatch(ctx, tx, plans); err != nil {
+		return nil, err
+	}
+
+	for _, plan := range plans {
+		byID[*plan.ID] = plan
+	}
+
+	return byID, nil
+}
+
+// planRatesByID looks up the given plan rates and indexes them by identifier. It backs the association loads that GORM
+// performed with Preload, which issued exactly this query and matched the rows up in Go.
+func planRatesByID(ctx context.Context, tx *goqu.TxDatabase, ids []string) (map[string]*model.PlanRate, error) {
+	byID := make(map[string]*model.PlanRate, len(ids))
+	if len(ids) == 0 {
+		return byID, nil
+	}
+
+	planRates := []*model.PlanRate{}
+	err := tx.From(t.PlanRates).
+		Select(planRateColumns...).
+		Where(goqu.C("id").In(ids)).
+		Executor().
+		ScanStructsContext(ctx, &planRates)
+	if err != nil {
+		return nil, fmt.Errorf("unable to look up plan rates: %w", err)
+	}
+
+	for _, planRate := range planRates {
+		byID[*planRate.ID] = planRate
+	}
+
+	return byID, nil
 }
 
 // GetPlanByID looks up the plan with the given identifier, along with its quota defaults and rates. It returns an error
@@ -160,13 +226,27 @@ func ListPlans(ctx context.Context, tx *goqu.TxDatabase) ([]*model.Plan, error) 
 		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
 	}
 
-	for _, plan := range plans {
-		if err = loadPlanDetails(ctx, tx, plan); err != nil {
-			return nil, fmt.Errorf("%s: %w", wrapMsg, err)
-		}
+	if err = loadPlanDetailsBatch(ctx, tx, plans); err != nil {
+		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
 	}
 
 	return plans, nil
+}
+
+// GetPlansByName builds a map from plan name to plan details.
+func GetPlansByName(ctx context.Context, tx *goqu.TxDatabase) (map[string]*model.Plan, error) {
+	plans, err := ListPlans(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build the map from the plan name to the plan details.
+	result := make(map[string]*model.Plan, len(plans))
+	for _, plan := range plans {
+		result[plan.Name] = plan
+	}
+
+	return result, nil
 }
 
 // CheckPlanExistence determines whether or not a subscription plan with the given identifier exists.

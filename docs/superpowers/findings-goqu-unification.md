@@ -1096,3 +1096,111 @@ err.Error(), http.StatusBadRequest)` — and the goqu version keeps it, includin
 the `Begin()` failure now folded into the same branch. Recorded because it is
 the one handler in this file whose error mapping is visibly wrong and no golden
 reaches it; repairing it belongs outside this branch.
+
+## Task 15: `?limit=0` is the one reachable behavior change goqu introduces silently
+
+`GET /v1/subscriptions` accepts `limit` validated as `gte=0`, so zero is a legal
+request meaning "give me the total and no rows." GORM emitted it faithfully —
+`clause.Limit.Build` writes `LIMIT ` whenever `*limit.Limit >= 0`
+(`gorm@v1.31.2/clause/limit.go:16-19`), so the query returned no rows. goqu does
+the opposite: `(*SelectDataset).Limit`
+(`goqu/v9@v9.19.0/select_dataset.go:423-428`) **clears** the limit clause when it
+is handed zero:
+
+```go
+func (sd *SelectDataset) Limit(limit uint) *SelectDataset {
+	if limit > 0 {
+		return sd.copy(sd.clauses.SetLimit(limit))
+	}
+	return sd.copy(sd.clauses.ClearLimit())
+}
+```
+
+A direct transcription therefore turns `?limit=0` from "no subscriptions" into
+"every active subscription in the service," unpaginated. `ListSubscriptions`
+short-circuits instead: at `limit == 0` it returns the count with the
+initialized empty slice and never runs the row query.
+
+**Nothing in the golden set reaches it.** `subscriptions_list_empty.json` is the
+suite's only empty listing and its `total` is zero too, so it cannot tell "the
+limit was honored" from "the filter matched nothing."
+`TestBulkSubscriptionEndpoints/a_limit_of_zero_returns_the_count_and_no_subscriptions`
+pins it in Go: it asserts zero subscriptions **and** a total of one. It was
+confirmed passing unchanged against the `goqu-baseline` tag in a scratch
+worktree, then observed failing (`listed subscriptions = 1, want 0`) with the
+short-circuit removed — a real red-green cycle, not a description of the new
+code.
+
+`Offset(0)` needs no such treatment: goqu clears it and `OFFSET 0` is a no-op,
+so the two agree. The same hazard applies to `DeleteDataset` and
+`UpdateDataset`, whose `Limit` methods are written identically.
+
+### The association loads are batched, and there is now one loader rather than two
+
+`ListSubscriptions` is the paginated admin listing, so the per-subscription
+`loadSubscriptionDetails` that Task 14 used for a single user's listing would
+have cost roughly `limit × 9` round trips per page.
+`loadSubscriptionDetailsBatch` loads a table at a time instead — users, plans
+(with `loadPlanDetailsBatch`), plan rates, quotas, usages, and the resource types
+they reference — for a fixed ~10 statements per page whatever the limit.
+
+**It replaced the single-subscription loader rather than sitting beside it.**
+`loadSubscriptionDetails` is now a one-line call into the batch version, so
+`GetSubscriptionDetails`, `ListSubscriptionsForUser`,
+`ListOverlappingSubscriptionDetails` and `ListSubscriptions` all share one
+implementation and one set of predicates. `ListPlans` and `GetPlansByName` were
+switched to `loadPlanDetailsBatch` for the same reason. The alternative — a
+second loader used only by the paginated listing — would have re-created exactly
+the shape the consolidated `activeAsOf` fix was undoing, four hand-copied
+association loads that can drift apart.
+
+**Neither batched sort mentions the grouping key**, which is what makes the
+shapes provably identical. The quota defaults are still ordered
+`plan_quota_defaults.effective_date asc, resource_types.name asc` and the plan
+rates still `effective_date asc`; grouping the rows by plan (or by subscription)
+in Go preserves their relative order within each group, so adding a leading
+`plan_id` term would have been an unnecessary risk rather than a requirement.
+The quota and usage listings stay unordered, matching the queries they replace.
+
+The `[]`-not-`null` rule needed one adjustment for the grouped form: a map
+returns nil for an absent key, which would have reintroduced the flip for any
+subscription with no quotas. Every grouping map is seeded with an empty slice
+for each requested identifier before the rows are read, rather than relying on
+`append` to a missing key.
+
+### The `x == nil` sweep found no not-found branches in this file
+
+Task 14's rule was applied and came up empty, which is worth recording so nobody
+re-hunts. `controllers/subscriptions.go` has six `== nil` tests and none of them
+guards a converted lookup: `subscription.Plan == nil` (`:69`) is a defensive
+skip inside `largestSubscription` over an already-loaded listing, `largest ==
+nil` (`:73`) is a loop accumulator, `username`/`planName`/`paid` (`:88`, `:98`,
+`:101`) are request-body pointers, and `plan == nil` (`:113`) tests a map lookup
+whose `ok` result is already checked. The four repointed calls all report
+absence as an error the handler already surfaces as a `failure_reason`.
+
+### `POST /v1/subscriptions` opens one transaction per item, plus one for the plan cache
+
+`NewSubscriptionAdder` took the bare `*gorm.DB` and ran outside any transaction;
+its goqu replacement takes a `*goqu.TxDatabase`, so the plan listing it caches
+now runs in a transaction of its own that commits **before** the first
+per-subscription transaction opens. The per-item transactions were already
+sequential and `AddSubscription` still takes the transaction it is handed rather
+than opening one, so no request ever holds two at once.
+
+Neither transaction callback uses `txError`: the per-item one deliberately
+reports failures in the 200 response body rather than as an error response
+(`TestBulkSubscriptionFailuresAreReportedPerItem`), and the listing's callback
+returns its error for the handler to render outside the transaction, which is
+what it did under GORM. Introducing `txError` would have moved a response write
+inside a transaction for no observable gain.
+
+`getUserByID` and `getPlanRateByID` were deleted rather than kept: the batched
+`usersByID` and `planRatesByID` superseded them and `unused` flagged both.
+
+`ListSubscriptions` also gained a guard its GORM original lacked. The sort field
+arrives as a caller-supplied string and was interpolated straight into the
+`ORDER BY`; the goqu version resolves it through a fixed map of the three
+accepted names and errors on anything else. The handler validates the same three
+values first, so the branch is unreachable today — it exists so that the column
+name can never be interpolated from a string again.

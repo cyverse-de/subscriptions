@@ -66,32 +66,6 @@ func withSubscriptionDetails(db *gorm.DB) *gorm.DB {
 		Preload("PlanRate")
 }
 
-// QuotasFromPlan generates a set of quotas from the plan quota defaults in a plan.
-func QuotasFromPlan(plan *model.Plan, periods int32) []model.Quota {
-
-	// Get the active plan quota defaults from the plan.
-	pqds := plan.GetDefaultQuotaValues()
-
-	// Build the array of quotas.
-	result := make([]model.Quota, len(pqds))
-
-	// Populate the quotas.
-	currentIndex := 0
-	for _, quotaDefault := range pqds {
-		quotaValue := quotaDefault.QuotaValue
-		if quotaDefault.ResourceType.Consumable {
-			quotaValue *= float64(periods)
-		}
-		result[currentIndex] = model.Quota{
-			Quota:          quotaValue,
-			ResourceTypeID: quotaDefault.ResourceTypeID,
-		}
-		currentIndex++
-	}
-
-	return result
-}
-
 // SubscribeUserToPlanGORM subscribes the given user to the given plan.
 func SubscribeUserToPlanGORM(
 	ctx context.Context, db *gorm.DB, user *model.User, plan *model.Plan, opts *model.SubscriptionOptions,
@@ -146,11 +120,11 @@ func SubscribeUserToDefaultPlanGORM(ctx context.Context, db *gorm.DB, username s
 	return SubscribeUserToPlanGORM(ctx, db, user, plan, &model.SubscriptionOptions{})
 }
 
-// ListOverlappingSubscriptionDetails retrieves every subscription belonging to the user whose effective period
+// ListOverlappingSubscriptionDetailsGORM retrieves every subscription belonging to the user whose effective period
 // intersects the given window, most recently started first, with the details needed to compare plan allocations. Adding
 // a subscription overrides all of them, so a caller deciding whether a new subscription is an upgrade has to weigh it
 // against the whole window rather than against the single subscription in effect when the window opens.
-func ListOverlappingSubscriptionDetails(
+func ListOverlappingSubscriptionDetailsGORM(
 	ctx context.Context,
 	db *gorm.DB,
 	username string,
@@ -240,17 +214,8 @@ func GetSubscriptionDetailsGORM(ctx context.Context, db *gorm.DB, subscriptionID
 	return subscription, err
 }
 
-// SubscriptionListingParams represents the parameters that can be used to customize a user plan listing.
-type SubscriptionListingParams struct {
-	Offset    int
-	Limit     int
-	SortField string
-	SortDir   string
-	Search    string
-}
-
-// ListSubscriptions lists subscriptions for multiple users.
-func ListSubscriptions(
+// ListSubscriptionsGORM lists subscriptions for multiple users.
+func ListSubscriptionsGORM(
 	ctx context.Context, db *gorm.DB, params *SubscriptionListingParams,
 ) ([]*model.Subscription, int64, error) {
 	var subscriptions []*model.Subscription

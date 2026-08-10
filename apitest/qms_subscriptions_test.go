@@ -252,6 +252,28 @@ func TestBulkSubscriptionEndpoints(t *testing.T) {
 		got := do(t, http.MethodGet, "/v1/subscriptions?offset=0&limit=50&search=nomatch", "")
 		assertGolden(t, "subscriptions_list_empty", got, http.StatusOK)
 	})
+
+	// A limit of zero asks for the total alone. It can't be pinned with the
+	// empty-listing golden, whose total is zero too, and the two query layers
+	// disagree about it: GORM emitted LIMIT 0, while goqu's Limit clears the
+	// clause when it's given zero and would return the whole page.
+	t.Run("a limit of zero returns the count and no subscriptions", func(t *testing.T) {
+		got := do(t, http.MethodGet, "/v1/subscriptions?offset=0&limit=0", "")
+		if got.status != http.StatusOK {
+			t.Fatalf("status = %d, body %s", got.status, got.body)
+		}
+
+		result, ok := mustDecode(t, got)["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected response shape: %s", got.body)
+		}
+		if listed, _ := result["subscriptions"].([]any); len(listed) != 0 {
+			t.Errorf("listed subscriptions = %d, want 0", len(listed))
+		}
+		if total, _ := result["total"].(float64); total != 1 {
+			t.Errorf("total = %v, want 1", total)
+		}
+	})
 }
 
 // createUser checks only the status of PUT /v1/users/{username}; this pins the

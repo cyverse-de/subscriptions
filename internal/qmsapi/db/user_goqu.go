@@ -80,27 +80,6 @@ func usersByID(ctx context.Context, tx *goqu.TxDatabase, ids []string) (map[stri
 	return byID, nil
 }
 
-// getUserByID looks up the user with the given identifier. It returns an error matching ErrNotFound when no user has
-// that identifier.
-func getUserByID(ctx context.Context, tx *goqu.TxDatabase, userID string) (*model.User, error) {
-	wrapMsg := fmt.Sprintf("unable to look up user ID '%s'", userID)
-
-	var user model.User
-	found, err := tx.From(t.Users).
-		Select(userColumns...).
-		Where(goqu.C("id").Eq(userID)).
-		Executor().
-		ScanStructContext(ctx, &user)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
-	}
-	if !found {
-		return nil, fmt.Errorf("%s: %w", wrapMsg, ErrNotFound)
-	}
-
-	return &user, nil
-}
-
 // UserExists determines whether or not the user exists in the database.
 func UserExists(ctx context.Context, tx *goqu.TxDatabase, username string) (bool, error) {
 	wrapMsg := "unable to determine whether user exists"

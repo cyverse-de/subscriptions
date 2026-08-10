@@ -2,13 +2,14 @@ package db
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	t "github.com/cyverse-de/subscriptions/db/tables"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
 	"github.com/doug-martin/goqu/v9"
+	"github.com/doug-martin/goqu/v9/exp"
 )
 
 // The columns backing model.Subscription, model.Quota and model.Usage. goqu fails a scan when a returned column has no
@@ -50,6 +51,45 @@ func notExpiredAtExpression(cutoff time.Time) goqu.Expression {
 		t.Subscriptions.Col("effective_end_date").IsNull(),
 		t.Subscriptions.Col("effective_end_date").Gte(cutoff),
 	)
+}
+
+// overlappingExpression restricts a subscription query to the subscriptions whose effective period intersects the given
+// window. A subscription that ends exactly when the window opens, or starts exactly when it closes, doesn't intersect
+// it. As with activeNowExpression, a subscription with no effective end date runs indefinitely once it has started.
+func overlappingExpression(startDate, endDate time.Time) goqu.Expression {
+	return goqu.And(
+		t.Subscriptions.Col("effective_start_date").Lt(endDate),
+		goqu.Or(
+			t.Subscriptions.Col("effective_end_date").IsNull(),
+			t.Subscriptions.Col("effective_end_date").Gt(startDate),
+		),
+	)
+}
+
+// QuotasFromPlan generates a set of quotas from the plan quota defaults in a plan.
+func QuotasFromPlan(plan *model.Plan, periods int32) []model.Quota {
+
+	// Get the active plan quota defaults from the plan.
+	pqds := plan.GetDefaultQuotaValues()
+
+	// Build the array of quotas.
+	result := make([]model.Quota, len(pqds))
+
+	// Populate the quotas.
+	currentIndex := 0
+	for _, quotaDefault := range pqds {
+		quotaValue := quotaDefault.QuotaValue
+		if quotaDefault.ResourceType.Consumable {
+			quotaValue *= float64(periods)
+		}
+		result[currentIndex] = model.Quota{
+			Quota:          quotaValue,
+			ResourceTypeID: quotaDefault.ResourceTypeID,
+		}
+		currentIndex++
+	}
+
+	return result
 }
 
 // SubscribeUserToPlan subscribes the given user to the given plan.
@@ -261,62 +301,115 @@ func GetSubscriptionDetails(ctx context.Context, tx *goqu.TxDatabase, subscripti
 }
 
 // loadSubscriptionDetails loads the associations required to describe a subscription in a response and to determine its
-// plan's active quota defaults. A missing association is left unset rather than reported, matching the GORM preloads
-// this replaces; every one of them is a foreign key, so absence means the row was deleted mid-transaction.
+// plan's active quota defaults.
 func loadSubscriptionDetails(ctx context.Context, tx *goqu.TxDatabase, subscription *model.Subscription) error {
-	if subscription.UserID != nil {
-		user, err := getUserByID(ctx, tx, *subscription.UserID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return err
+	return loadSubscriptionDetailsBatch(ctx, tx, []*model.Subscription{subscription})
+}
+
+// loadSubscriptionDetailsBatch loads the associations required to describe a set of subscriptions in a response and to
+// determine each plan's active quota defaults. The associations are loaded a table at a time rather than a subscription
+// at a time, so that a paginated listing costs the same number of statements however many subscriptions it returns. A
+// missing association is left unset rather than reported, matching the GORM preloads this replaces; every one of them is
+// a foreign key, so absence means the row was deleted mid-transaction.
+func loadSubscriptionDetailsBatch(
+	ctx context.Context, tx *goqu.TxDatabase, subscriptions []*model.Subscription,
+) error {
+	if len(subscriptions) == 0 {
+		return nil
+	}
+
+	subscriptionIDs := make([]string, 0, len(subscriptions))
+	userIDs := make([]string, 0, len(subscriptions))
+	planIDs := make([]string, 0, len(subscriptions))
+	planRateIDs := make([]string, 0, len(subscriptions))
+	for _, subscription := range subscriptions {
+		subscriptionIDs = append(subscriptionIDs, *subscription.ID)
+		if subscription.UserID != nil {
+			userIDs = append(userIDs, *subscription.UserID)
 		}
-		if err == nil {
-			subscription.User = user
+		if subscription.PlanID != nil {
+			planIDs = append(planIDs, *subscription.PlanID)
+		}
+		if subscription.PlanRateID != nil {
+			planRateIDs = append(planRateIDs, *subscription.PlanRateID)
 		}
 	}
 
-	// A missing plan leaves Plan nil, which controllers/usages.go dereferences as subscription.Plan.Name without a
-	// guard. That is safe only because subscriptions.plan_id is a NOT NULL foreign key, so the row cannot be absent;
-	// anything that relaxes the constraint has to give the consumers a nil check first.
-	if subscription.PlanID != nil {
-		plan, err := GetPlanByID(ctx, tx, *subscription.PlanID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return err
-		}
-		if err == nil {
-			subscription.Plan = plan
-		}
+	users, err := usersByID(ctx, tx, userIDs)
+	if err != nil {
+		return err
 	}
-
-	if subscription.PlanRateID != nil {
-		planRate, err := getPlanRateByID(ctx, tx, *subscription.PlanRateID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return err
-		}
-		if err == nil {
-			subscription.PlanRate = planRate
-		}
+	plans, err := plansByID(ctx, tx, planIDs)
+	if err != nil {
+		return err
 	}
-
-	if err := loadSubscriptionQuotas(ctx, tx, subscription); err != nil {
+	planRates, err := planRatesByID(ctx, tx, planRateIDs)
+	if err != nil {
+		return err
+	}
+	quotas, err := quotasBySubscriptionID(ctx, tx, subscriptionIDs)
+	if err != nil {
+		return err
+	}
+	usages, err := usagesBySubscriptionID(ctx, tx, subscriptionIDs)
+	if err != nil {
 		return err
 	}
 
-	return loadSubscriptionUsages(ctx, tx, subscription)
+	for _, subscription := range subscriptions {
+		if subscription.UserID != nil {
+			if user, ok := users[*subscription.UserID]; ok {
+				subscription.User = user
+			}
+		}
+
+		// A missing plan leaves Plan nil, which controllers/usages.go dereferences as subscription.Plan.Name without a
+		// guard. That is safe only because subscriptions.plan_id is a NOT NULL foreign key, so the row cannot be absent;
+		// anything that relaxes the constraint has to give the consumers a nil check first.
+		if subscription.PlanID != nil {
+			if plan, ok := plans[*subscription.PlanID]; ok {
+				subscription.Plan = plan
+			}
+		}
+
+		if subscription.PlanRateID != nil {
+			if planRate, ok := planRates[*subscription.PlanRateID]; ok {
+				subscription.PlanRate = planRate
+			}
+		}
+
+		subscription.Quotas = quotas[*subscription.ID]
+		subscription.Usages = usages[*subscription.ID]
+	}
+
+	return nil
 }
 
-// loadSubscriptionQuotas loads the quotas recorded against a subscription, along with the resource type each one
-// applies to. The listing is deliberately unordered: the query it replaces had no ORDER BY.
-func loadSubscriptionQuotas(ctx context.Context, tx *goqu.TxDatabase, subscription *model.Subscription) error {
-	// Initialized rather than declared nil so that a subscription with no quotas marshals as [] and not null: goqu only
-	// touches the destination once per row, where GORM's Find replaced it with an empty slice before reading any.
+// quotasBySubscriptionID loads the quotas recorded against the given subscriptions, along with the resource type each
+// one applies to, and groups them by subscription. The listing is deliberately unordered: the query it replaces had no
+// ORDER BY, and grouping the rows in Go preserves the relative order of the rows belonging to any one subscription.
+func quotasBySubscriptionID(
+	ctx context.Context, tx *goqu.TxDatabase, subscriptionIDs []string,
+) (map[string][]model.Quota, error) {
+	// Seeded with empty slices rather than left absent so that a subscription with no quotas marshals as [] and not
+	// null: goqu only touches the destination once per row, where GORM's Find replaced it with an empty slice before
+	// reading any.
+	bySubscription := make(map[string][]model.Quota, len(subscriptionIDs))
+	for _, subscriptionID := range subscriptionIDs {
+		bySubscription[subscriptionID] = []model.Quota{}
+	}
+	if len(subscriptionIDs) == 0 {
+		return bySubscription, nil
+	}
+
 	quotas := []model.Quota{}
 	err := tx.From(t.Quotas).
 		Select(quotaColumns...).
-		Where(goqu.C("subscription_id").Eq(*subscription.ID)).
+		Where(goqu.C("subscription_id").In(subscriptionIDs)).
 		Executor().
 		ScanStructsContext(ctx, &quotas)
 	if err != nil {
-		return fmt.Errorf("unable to look up the subscription quotas: %w", err)
+		return nil, fmt.Errorf("unable to look up the subscription quotas: %w", err)
 	}
 
 	resourceTypeIDs := make([]string, 0, len(quotas))
@@ -325,31 +418,42 @@ func loadSubscriptionQuotas(ctx context.Context, tx *goqu.TxDatabase, subscripti
 	}
 	resourceTypes, err := resourceTypesByID(ctx, tx, resourceTypeIDs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for i := range quotas {
 		if resourceType, ok := resourceTypes[*quotas[i].ResourceTypeID]; ok {
 			quotas[i].ResourceType = *resourceType
 		}
+		subscriptionID := *quotas[i].SubscriptionID
+		bySubscription[subscriptionID] = append(bySubscription[subscriptionID], quotas[i])
 	}
-	subscription.Quotas = quotas
 
-	return nil
+	return bySubscription, nil
 }
 
-// loadSubscriptionUsages loads the usage amounts recorded against a subscription, along with the resource type each one
-// applies to. The listing is deliberately unordered: the query it replaces had no ORDER BY.
-func loadSubscriptionUsages(ctx context.Context, tx *goqu.TxDatabase, subscription *model.Subscription) error {
-	// Initialized for the same reason as the quota listing above; a user who has recorded no usage is routine, and this
+// usagesBySubscriptionID loads the usage amounts recorded against the given subscriptions, along with the resource type
+// each one applies to, and groups them by subscription. Unordered for the same reason the quota listing above is.
+func usagesBySubscriptionID(
+	ctx context.Context, tx *goqu.TxDatabase, subscriptionIDs []string,
+) (map[string][]model.Usage, error) {
+	// Seeded for the same reason as the quota listing above; a user who has recorded no usage is routine, and this
 	// slice is what GET /v1/usages/{username} returns.
+	bySubscription := make(map[string][]model.Usage, len(subscriptionIDs))
+	for _, subscriptionID := range subscriptionIDs {
+		bySubscription[subscriptionID] = []model.Usage{}
+	}
+	if len(subscriptionIDs) == 0 {
+		return bySubscription, nil
+	}
+
 	usages := []model.Usage{}
 	err := tx.From(t.Usages).
 		Select(usageColumns...).
-		Where(goqu.C("subscription_id").Eq(*subscription.ID)).
+		Where(goqu.C("subscription_id").In(subscriptionIDs)).
 		Executor().
 		ScanStructsContext(ctx, &usages)
 	if err != nil {
-		return fmt.Errorf("unable to look up the subscription usages: %w", err)
+		return nil, fmt.Errorf("unable to look up the subscription usages: %w", err)
 	}
 
 	resourceTypeIDs := make([]string, 0, len(usages))
@@ -358,16 +462,17 @@ func loadSubscriptionUsages(ctx context.Context, tx *goqu.TxDatabase, subscripti
 	}
 	resourceTypes, err := resourceTypesByID(ctx, tx, resourceTypeIDs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for i := range usages {
 		if resourceType, ok := resourceTypes[*usages[i].ResourceTypeID]; ok {
 			usages[i].ResourceType = *resourceType
 		}
+		subscriptionID := *usages[i].SubscriptionID
+		bySubscription[subscriptionID] = append(bySubscription[subscriptionID], usages[i])
 	}
-	subscription.Usages = usages
 
-	return nil
+	return bySubscription, nil
 }
 
 // GetActiveSubscriptionDetails retrieves the user plan information that is currently active for the user, subscribing
@@ -423,10 +528,136 @@ func ListSubscriptionsForUser(
 		return nil, 0, fmt.Errorf("%s: %w", wrapMsg, err)
 	}
 
-	for _, subscription := range subscriptions {
-		if err = loadSubscriptionDetails(ctx, tx, subscription); err != nil {
-			return nil, 0, fmt.Errorf("%s: %w", wrapMsg, err)
+	if err = loadSubscriptionDetailsBatch(ctx, tx, subscriptions); err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	return subscriptions, count, nil
+}
+
+// ListOverlappingSubscriptionDetails retrieves every subscription belonging to the user whose effective period
+// intersects the given window, most recently started first, with the details needed to compare plan allocations. Adding
+// a subscription overrides all of them, so a caller deciding whether a new subscription is an upgrade has to weigh it
+// against the whole window rather than against the single subscription in effect when the window opens.
+func ListOverlappingSubscriptionDetails(
+	ctx context.Context, tx *goqu.TxDatabase, username string, startDate, endDate time.Time,
+) ([]*model.Subscription, error) {
+	wrapMsg := fmt.Sprintf("unable to list the subscriptions between %s and %s", startDate, endDate)
+
+	// Initialized rather than declared nil so that a user with no subscriptions over the window yields [] and not nil:
+	// goqu only touches the destination once per row, where GORM's Find replaced it with an empty slice before reading
+	// any.
+	subscriptions := []*model.Subscription{}
+	err := tx.From(t.Subscriptions).
+		Select(subscriptionColumns...).
+		Join(t.Users, goqu.On(t.Subscriptions.Col("user_id").Eq(t.Users.Col("id")))).
+		Where(t.Users.Col("username").Eq(username), overlappingExpression(startDate, endDate)).
+		Order(t.Subscriptions.Col("effective_start_date").Desc()).
+		Executor().
+		ScanStructsContext(ctx, &subscriptions)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	if err = loadSubscriptionDetailsBatch(ctx, tx, subscriptions); err != nil {
+		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	return subscriptions, nil
+}
+
+// SubscriptionListingParams represents the parameters that can be used to customize a user plan listing.
+type SubscriptionListingParams struct {
+	Offset    int
+	Limit     int
+	SortField string
+	SortDir   string
+	Search    string
+}
+
+// listingSortFields maps the sort field names the listing accepts to the ordered expression each one sorts by. The
+// column names are enumerated rather than interpolated so that a caller cannot inject SQL through the sort field.
+var listingSortFields = map[string]exp.IdentifierExpression{
+	"users.username":                     t.Users.Col("username"),
+	"subscriptions.effective_start_date": t.Subscriptions.Col("effective_start_date"),
+	"subscriptions.effective_end_date":   t.Subscriptions.Col("effective_end_date"),
+}
+
+// ListSubscriptions lists the subscriptions that are active right now, across every user, along with the total number of
+// them, which is larger than the number returned whenever the listing is paginated.
+func ListSubscriptions(
+	ctx context.Context, tx *goqu.TxDatabase, params *SubscriptionListingParams,
+) ([]*model.Subscription, int64, error) {
+	wrapMsg := "unable to list the subscriptions"
+
+	// Determine the offset and limit to use.
+	offset := 0
+	if params != nil && params.Offset >= 0 {
+		offset = params.Offset
+	}
+	limit := 50
+	if params != nil && params.Limit >= 0 {
+		limit = params.Limit
+	}
+
+	// Determine the sort field and sort order to use.
+	sortColumn := t.Users.Col("username")
+	if params != nil && params.SortField != "" {
+		column, ok := listingSortFields[params.SortField]
+		if !ok {
+			return nil, 0, fmt.Errorf("%s: unrecognized sort field '%s'", wrapMsg, params.SortField)
 		}
+		sortColumn = column
+	}
+	orderBy := sortColumn.Asc()
+	if params != nil && strings.EqualFold(params.SortDir, "desc") {
+		orderBy = sortColumn.Desc()
+	}
+
+	conditions := []goqu.Expression{activeNowExpression()}
+	if params != nil && params.Search != "" {
+		// The LIKE metacharacters are escaped so that a search term containing one matches it literally.
+		search := strings.ReplaceAll(params.Search, "%", `\%`)
+		search = strings.ReplaceAll(search, "_", `\_`)
+		conditions = append(conditions, t.Users.Col("username").Like("%"+search+"%"))
+	}
+
+	var count int64
+	_, err := tx.From(t.Subscriptions).
+		Select(goqu.COUNT(goqu.Star())).
+		Join(t.Users, goqu.On(t.Subscriptions.Col("user_id").Eq(t.Users.Col("id")))).
+		Where(conditions...).
+		Executor().
+		ScanValContext(ctx, &count)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	// Initialized rather than declared nil so that an empty listing marshals as [] and not null: goqu only touches the
+	// destination once per row, where GORM's Find replaced it with an empty slice before reading any.
+	subscriptions := []*model.Subscription{}
+
+	// A limit of zero asks for the count alone, which is what the LIMIT 0 this replaces returned. goqu clears the limit
+	// rather than emitting one when it is given zero, so the query has to be skipped instead.
+	if limit == 0 {
+		return subscriptions, count, nil
+	}
+
+	err = tx.From(t.Subscriptions).
+		Select(subscriptionColumns...).
+		Join(t.Users, goqu.On(t.Subscriptions.Col("user_id").Eq(t.Users.Col("id")))).
+		Where(conditions...).
+		Order(orderBy).
+		Offset(uint(offset)).
+		Limit(uint(limit)).
+		Executor().
+		ScanStructsContext(ctx, &subscriptions)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	if err = loadSubscriptionDetailsBatch(ctx, tx, subscriptions); err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", wrapMsg, err)
 	}
 
 	return subscriptions, count, nil
