@@ -1102,6 +1102,34 @@ pre-populated struct and deliberately ignores the `found` result. Translating
 this one to `ErrNotFound` like every other single-row lookup in the package
 would turn a `200` into a `404` for a plan whose rates are all in the future.
 
+**FIXED on `goqu-deferred-fixes`.** That `200` is the bug, so the translation
+this entry forbade is exactly what was done: `GetActivePlanRate`
+(`internal/qmsapi/db/plan_goqu.go`) now checks the `found` result and returns
+`fmt.Errorf("%s: %w", wrapMsg, ErrNotFound)`, and the handler
+(`internal/qmsapi/controllers/plans.go`) maps that to a `404`, the way the
+sibling `/active-quota-defaults` route and the plan-existence check ahead of it
+already map their absences. The reason this outranks reproducing GORM: a plan
+whose only rate is future-dated answered
+`200 {"result":{"effective_date":"0001-01-01T00:00:00Z","rate":0}}`, and a
+billing caller reading `result.rate` charges zero rather than erroring —
+absence and free are indistinguishable in that body. The 404 message is
+`no active rate found for plan ID <id>`, deliberately distinct from the
+`plan ID <id> not found` the same route returns for an unknown plan, since here
+the plan does exist.
+
+The handler is the function's only caller (`internal/qmsapi/router.go:62` is
+its only route), so the blast radius is this one endpoint. **No golden moved:**
+`v1_plan_active_rate.json` pins the success case against the seeded `Basic`
+plan, whose rate is already in effect, and `v1_plan_active_rate_unknown.json`
+pins the unknown-plan 404, which `CheckPlanExistence` decides before this
+lookup runs. The new case is covered by `TestActivePlanRateWithNoRateInEffect`
+(`apitest/qms_plans_test.go`), which inserts a plan whose only rate is dated a
+year out — writing to `plans` and `plan_rates`, both of which `resetDB`
+preserves, so it drops the plan in a `t.Cleanup` and lets the `ON DELETE
+CASCADE` on `plan_rates.plan_id` take the rate with it. Against the pre-fix
+code it fails with `status = 200, want 404; body:
+{"result":{"effective_date":"0001-01-01T00:00:00Z","rate":0},"status":"OK"}`.
+
 **The two existence checks stay `count(*) > 0`.** `CheckPlanExistence` and
 `CheckPlanNameExistence` return `(bool, error)`, and their callers turn `false`
 into a 404 or a 400 of their own. Rewriting them as a lookup that reports
@@ -1604,7 +1632,11 @@ returns exactly one row, whether or not anything matched the `WHERE` clause
 so `found` is always `true` and carries no information. The single-row
 *lookups* — `GetSubscriptionDetails`, `GetActivePlanRate`, and the rest that
 filter down to at most one real row — all check `found`, because for them a
-`false` is the only signal that nothing matched.
+`false` is the only signal that nothing matched. (`GetActivePlanRate` was the
+one exception when this was written: it discarded `found` to reproduce GORM's
+zero-valued `200`. `goqu-deferred-fixes` made it report `ErrNotFound` like the
+others — see "`GetActivePlanRate` must not report absence" above — so the rule
+now holds without exception.)
 
 That is a coherent two-rule convention: check `found` on a lookup, ignore it
 on a bare aggregate. Recorded here so the next reader doesn't "fix"

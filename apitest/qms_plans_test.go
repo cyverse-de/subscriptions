@@ -114,3 +114,54 @@ func TestAddPlanRates(t *testing.T) {
 		t.Errorf("stored plan_rates rows = %d, want 1", stored)
 	}
 }
+
+// A plan whose only rate takes effect in the future has no active rate. The
+// route used to answer 200 with a zero-valued model.PlanRate carrying nothing
+// but the plan ID, so a billing caller reading result.rate charged zero instead
+// of erroring. It now reports the absence as a 404, which is what every other
+// single-row lookup in the converted layer does.
+func TestActivePlanRateWithNoRateInEffect(t *testing.T) {
+	resetDB(t)
+
+	const planName = "Future Rate Plan"
+
+	// plans and plan_rates are reference data resetDB preserves, so this test
+	// removes its own rows. The plan_rates foreign key cascades on delete, so
+	// dropping the plan takes its rate with it.
+	t.Cleanup(func() {
+		if _, err := testDB.Exec(`DELETE FROM plans WHERE name = $1`, planName); err != nil {
+			t.Fatalf("unable to remove the plan this test added: %s", err)
+		}
+	})
+
+	var planID string
+	if err := testDB.QueryRow(
+		`INSERT INTO plans ("name", description) VALUES ($1, $2) RETURNING id`,
+		planName, "its only rate takes effect a year from now",
+	).Scan(&planID); err != nil {
+		t.Fatalf("unable to add the plan: %s", err)
+	}
+	if _, err := testDB.Exec(`
+		INSERT INTO plan_rates (plan_id, effective_date, rate)
+		VALUES ($1, CURRENT_TIMESTAMP + interval '1 year', $2)`, planID, 42.0,
+	); err != nil {
+		t.Fatalf("unable to add the future-dated plan rate: %s", err)
+	}
+
+	got := do(t, http.MethodGet, "/v1/plans/"+planID+"/active-rate", "")
+	if got.status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", got.status, got.body)
+	}
+
+	// The plan itself exists, so the message has to distinguish "no rate in
+	// effect" from the unknown-plan 404 the same route returns.
+	body := mustDecode(t, got)
+	errMsg, _ := body["error"].(string)
+	wantMsg := "no active rate found for plan ID " + planID
+	if errMsg != wantMsg {
+		t.Errorf("error = %q, want %q", errMsg, wantMsg)
+	}
+	if _, reported := body["result"]; reported {
+		t.Errorf("the response still carries a result: %s", got.body)
+	}
+}

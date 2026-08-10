@@ -218,7 +218,10 @@ func (s Server) GetActivePlanRate(ctx echo.Context) error {
 
 		// Look up the active plan rate.
 		activePlanRate, err := qmsdb.GetActivePlanRate(context, tx, planID)
-		if err != nil {
+		if errors.Is(err, qmsdb.ErrNotFound) {
+			msg := fmt.Sprintf("no active rate found for plan ID %s", planID)
+			return txError(ctx, msg, http.StatusNotFound)
+		} else if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
