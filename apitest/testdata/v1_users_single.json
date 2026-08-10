@@ -1,0 +1,9 @@
+{
+  "result": [
+    {
+      "id": "<uuid>",
+      "username": "testuser"
+    }
+  ],
+  "status": "OK"
+}

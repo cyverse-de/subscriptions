@@ -1,0 +1,9 @@
+{
+  "result": {
+    "api_version": "1.0.0",
+    "service": "subscriptions",
+    "title": "CyVerse Subscriptions",
+    "version": ""
+  },
+  "status": "OK"
+}
