@@ -97,8 +97,18 @@ func SubscribeUserToPlan(
 	return &subscription, nil
 }
 
+// savedQuota is one row of a quota insert's RETURNING clause. The resource type comes back alongside the generated
+// identifier so that the rows can be matched to the quotas that produced them by value; Postgres does not promise that
+// RETURNING emits rows in VALUES order, and a positional match that silently drifted would attach each quota's
+// identifier to the wrong resource type with nothing to detect it.
+type savedQuota struct {
+	ID             string `db:"id"`
+	ResourceTypeID string `db:"resource_type_id"`
+}
+
 // saveSubscriptionQuotas inserts the quotas belonging to a newly created subscription, recording the generated
-// identifiers on the subscription the caller is holding.
+// identifiers on the subscription the caller is holding. A subscription has at most one quota per resource type, which
+// the unique index on (resource_type_id, subscription_id) enforces, so the resource type identifies a row uniquely.
 func saveSubscriptionQuotas(ctx context.Context, tx *goqu.TxDatabase, subscription *model.Subscription) error {
 	if len(subscription.Quotas) == 0 {
 		return nil
@@ -113,21 +123,29 @@ func saveSubscriptionQuotas(ctx context.Context, tx *goqu.TxDatabase, subscripti
 		})
 	}
 
-	quotaIDs := []string{}
+	saved := []savedQuota{}
 	err := tx.Insert(t.Quotas).
 		Rows(rows...).
-		Returning("id").
+		Returning("id", "resource_type_id").
 		Executor().
-		ScanValsContext(ctx, &quotaIDs)
+		ScanStructsContext(ctx, &saved)
 	if err != nil {
 		return fmt.Errorf("unable to save the subscription quotas: %w", err)
 	}
-	if len(quotaIDs) != len(subscription.Quotas) {
-		return fmt.Errorf("saved %d of %d subscription quotas", len(quotaIDs), len(subscription.Quotas))
+	if len(saved) != len(subscription.Quotas) {
+		return fmt.Errorf("saved %d of %d subscription quotas", len(saved), len(subscription.Quotas))
 	}
 
+	quotaIDs := make(map[string]string, len(saved))
+	for _, row := range saved {
+		quotaIDs[row.ResourceTypeID] = row.ID
+	}
 	for i := range subscription.Quotas {
-		subscription.Quotas[i].ID = &quotaIDs[i]
+		id, ok := quotaIDs[*subscription.Quotas[i].ResourceTypeID]
+		if !ok {
+			return fmt.Errorf("no quota was saved for resource type %s", *subscription.Quotas[i].ResourceTypeID)
+		}
+		subscription.Quotas[i].ID = &id
 		subscription.Quotas[i].SubscriptionID = subscription.ID
 	}
 
@@ -227,6 +245,9 @@ func loadSubscriptionDetails(ctx context.Context, tx *goqu.TxDatabase, subscript
 		}
 	}
 
+	// A missing plan leaves Plan nil, which controllers/usages.go dereferences as subscription.Plan.Name without a
+	// guard. That is safe only because subscriptions.plan_id is a NOT NULL foreign key, so the row cannot be absent;
+	// anything that relaxes the constraint has to give the consumers a nil check first.
 	if subscription.PlanID != nil {
 		plan, err := getPlanByID(ctx, tx, *subscription.PlanID)
 		if err != nil && !errors.Is(err, ErrNotFound) {

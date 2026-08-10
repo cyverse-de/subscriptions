@@ -816,3 +816,75 @@ converted code.
 Both were confirmed to pass unchanged against the `goqu-baseline` tag in a
 scratch worktree before the conversion was trusted, which is what makes them
 characterization tests rather than descriptions of the new code.
+
+## Five query pairs are now goqu-vs-goqu duplicates across the two `db` packages
+
+The "Two packages named `db` in `controllers`" section above records one name
+collision, `GetResourceTypeByName`. It is not the only one, and Task 12 made the
+situation qualitatively worse rather than just larger.
+
+**Before Phase 2, every such pair was GORM-vs-goqu**, which a half-finished
+migration justifies: one implementation was on the way out. Task 12 converted the
+`/v1` side of five of them, so those pairs are now **goqu-vs-goqu, over the same
+tables, with different Go types and different not-found conventions** — which is
+precisely the soil the four-not-found-conventions trap grows in, and there is no
+longer a migration in progress to explain it away.
+
+| table | top-level `db` (goqu) | `internal/qmsapi/db` (goqu, as of Task 12) |
+|---|---|---|
+| `updates` (read) | `UserUpdates` (`db/updates.go:15`) | `ListUpdatesForUser` (`updates_goqu.go`) |
+| `updates` (write) | `AddUserUpdate` (`db/updates.go:88`) | `SaveUpdate` (`updates_goqu.go`) |
+| `users` (existence) | `UserExists` (`db/users.go:64`) | `UserExists` (`user_goqu.go`) |
+| `users` (upsert) | `AddUser` (`db/users.go:81`), `EnsureUser` (`:108`) | `GetUser` (`user_goqu.go`) |
+| `usages` (upsert) | `UpsertUsage` (`db/usages.go:45`) | `UpsertUsage` (`usage_goqu.go`) |
+
+The two `UserExists` and the two `UpsertUsage` share a name outright, so which
+one a reader is looking at depends on which file the import block is in — the
+same hazard as `GetResourceTypeByName`, now three times over.
+
+The pairs are not interchangeable, which is why this is a note and not a fix:
+the top-level versions return `db.*` types and signal absence with
+`suberrors.Err*NotFound`, the `/v1` versions return `model.*` types and signal it
+with `qmsdb.ErrNotFound`, and the two `UpsertUsage` signatures differ
+structurally (the top-level one takes an explicit `update bool` and scalar
+arguments; the `/v1` one takes a `*model.Usage`). Collapsing them means choosing
+a type and a convention per pair and rewriting the callers.
+
+**This is recorded, deliberately not acted on.** Consolidation is a change to the
+shared goqu layer that the non-`/v1` routes depend on, so it belongs to Task 16
+or a follow-up branch, where it can be done once with its own gate — not as a
+side effect of a per-controller conversion whose success criterion is "nothing
+changed."
+
+### `updates_goqu.go` has no GORM sibling to delete
+
+Every other `*_goqu.go` file in `internal/qmsapi/db` sits beside a GORM original
+that Task 16 removes. `updates_goqu.go` does not: its three functions
+(`GetUpdateOperationByName`, `SaveUpdate`, `ListUpdatesForUser`) were lifted out
+of `controllers/usages.go`, where they had been inline GORM calls, rather than
+converted from a named function in the db package. There is no `updates.go` to
+look for and nothing to delete beside it — the GORM code it replaced is already
+gone.
+
+## Positional binding of a multi-row `RETURNING` is silently wrong data
+
+`saveSubscriptionQuotas` (`internal/qmsapi/db/subscriptions_goqu.go`) originally
+ran `INSERT ... RETURNING id` over several `VALUES` rows, scanned the ids into a
+`[]string`, and assigned `quotas[i].ID = &ids[i]`.
+
+Postgres does emit `RETURNING` rows in `VALUES` order in practice, but it does
+not document that as a guarantee, and nothing about the code would detect a
+mismatch: the arity check passes either way, and the only visible symptom would
+be each quota carrying another resource type's identifier. Every current caller
+discards these ids — `GetActiveSubscriptionDetails` re-reads the subscription
+through `GetSubscriptionDetails` — so no golden and no assertion can fail.
+
+**The rule for Tasks 13-15:** when a cascaded insert has to hand generated keys
+back to the structs that produced them, return a natural key alongside the
+generated one and match by value. `saveSubscriptionQuotas` returns
+`("id", "resource_type_id")` and indexes by resource type, which is unambiguous
+because the unique index on `quotas (resource_type_id, subscription_id)` allows
+one quota per resource type per subscription. Dropping the write-back entirely
+was the other option and was rejected: GORM populated these ids, Tasks 14 and 15
+both convert callers of `SubscribeUserToPlan`, and a caller that starts reading
+`subscription.Quotas[i].ID` should find a correct value rather than a nil one.

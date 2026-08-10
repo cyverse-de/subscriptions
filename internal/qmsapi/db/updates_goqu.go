@@ -29,6 +29,11 @@ var (
 
 // GetUpdateOperationByName looks up the update operation with the given name. It returns an error matching ErrNotFound
 // when no update operation has that name.
+//
+// The name must stay an explicit predicate. The GORM version this replaces passed the name on the destination struct
+// instead, and GORM's First derives conditions only from primary key fields, so the query matched whichever operation
+// sorted first: every usage update was audited as ADD regardless of what was asked for, and an unrecognized update type
+// was accepted rather than refused. TestUsageWritesAnUpdatesRow in apitest pins both halves of that fix.
 func GetUpdateOperationByName(ctx context.Context, tx *goqu.TxDatabase, name string) (*model.UpdateOperation, error) {
 	wrapMsg := fmt.Sprintf("unable to look up update operation '%s'", name)
 

@@ -94,9 +94,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 		}
 		log.Debug("found resource type in database")
 
-		// Verify that the update operation for the given update type exists. The name has to be an explicit condition:
-		// GORM's First only filtered on the primary key, so setting Name on the destination struct matched whichever
-		// operation sorted first and recorded ADD for every update.
+		// Verify that the update operation for the given update type exists.
 		updateOperation, err := qmsdb.GetUpdateOperationByName(ctx, tx, usage.UpdateType)
 		if errors.Is(err, qmsdb.ErrNotFound) {
 			return fmt.Errorf("%w: %s", ErrInvalidUpdateType, usage.UpdateType)
