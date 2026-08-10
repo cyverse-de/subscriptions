@@ -11,7 +11,6 @@ import (
 var log = logging.Log.WithFields(logrus.Fields{"package": "db"})
 
 type Database struct {
-	db     *sqlx.DB
 	fullDB *goqu.Database
 	goquDB GoquDatabase
 	logSQL bool
@@ -20,7 +19,6 @@ type Database struct {
 func New(dbconn *sqlx.DB) *Database {
 	goquDB := goqu.New("postgresql", dbconn)
 	return &Database{
-		db:     dbconn, // Used when a method needs direct access to sqlx for struct scanning.
 		fullDB: goquDB, // Used when a method needs to use a method not defined in the GoquDatabase interface.
 		goquDB: goquDB, // Used when a method needs to optionally support being run inside a transaction.
 		logSQL: false,  // Set to true to log SQL statements. TODO: implement for all statements.

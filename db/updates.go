@@ -55,28 +55,9 @@ func (d *Database) UserUpdates(ctx context.Context, username string, opts ...Que
 		query = query.Offset(querySettings.offset)
 	}
 
-	qs, _, err := query.ToSQL()
-	if err != nil {
-		return nil, err
-	}
-
 	var results []Update
-	rows, err := d.db.QueryxContext(ctx, qs)
-	if err != nil {
+	if err = query.Executor().ScanStructsContext(ctx, &results); err != nil {
 		return nil, err
-	}
-
-	for rows.Next() {
-		var u Update
-		if err = rows.StructScan(&u); err != nil {
-			return nil, err
-		}
-		results = append(results, u)
-	}
-
-	err = rows.Err()
-	if err != nil {
-		return results, err
 	}
 
 	return results, nil

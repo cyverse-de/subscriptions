@@ -22,13 +22,11 @@ func (d *Database) GetOperationID(ctx context.Context, name string, opts ...Quer
 		Select("id").
 		Where(goqu.Ex{
 			"name": name,
-		})
-	qs, _, err := query.ToSQL()
-	if err != nil {
-		return "", err
-	}
+		}).
+		Executor()
+
 	var result string
-	if _, err = db.ScanValContext(ctx, &result, qs); err != nil {
+	if _, err = query.ScanValContext(ctx, &result); err != nil {
 		return "", err
 	}
 	return result, nil

@@ -23,13 +23,11 @@ func (d *Database) GetUserID(ctx context.Context, username string, opts ...Query
 		Select("id").
 		Where(goqu.Ex{
 			"username": username,
-		})
-	qs, _, err := query.ToSQL()
-	if err != nil {
-		return "", err
-	}
+		}).
+		Executor()
+
 	var result string
-	if _, err = db.ScanValContext(ctx, &result, qs); err != nil {
+	if _, err = query.ScanValContext(ctx, &result); err != nil {
 		return "", err
 	}
 	return result, nil
