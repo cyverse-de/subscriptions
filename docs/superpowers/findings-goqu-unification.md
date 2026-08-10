@@ -604,3 +604,99 @@ every handler that used `s.transaction`, so it is not new to the goqu layer. It
 is recorded because Tasks 12-14 convert more transaction-less handlers and will
 widen the set of routes it applies to, and because it is not reachable from any
 golden.
+
+## Every list conversion must initialize its destination slice: goqu turns an empty listing into `null`
+
+This is the first behavior difference the golden gate provably cannot catch,
+and it applies to every list endpoint Tasks 12-14 convert.
+
+**The two layers disagree on the empty case.** GORM's `Find` replaces the
+destination slice before it reads a single row
+(`gorm@v1.31.2/scan.go:295-302`):
+
+```go
+if reflectValue.Cap() == 0 {
+    db.Statement.ReflectValue.Set(reflect.MakeSlice(reflectValue.Type(), 0, 20))
+}
+```
+
+so a query matching nothing still leaves a non-nil, zero-length slice, which
+`encoding/json` renders as `[]`. goqu's `scanIntoSlice`
+(`goqu/v9@v9.19.0/exec/scanner.go:132-141`) only touches the destination inside
+`for s.Next()`:
+
+```go
+for s.Next() {
+    row := reflect.New(elemType)
+    if rowErr := it(row.Interface()); rowErr != nil { return rowErr }
+    util.AppendSliceElement(val, row)
+}
+```
+
+so zero rows leaves a `var xs []T` destination nil, which renders as `null`. A
+client doing `result.map(...)` breaks on `null`.
+
+**No golden can catch it.** Every list golden in the suite is backed by seeded
+reference data or by fixtures the test creates, so all of them are non-empty.
+The conversion is byte-identical on every recorded response and still changes
+the wire contract for the case none of them records. Tasks 12-14 convert
+listings where emptiness is routine rather than pathological — a user with no
+updates, no usages, no subscriptions — so the exposure there is far larger than
+it was for `/v1/resource-types`, which the migrations seed with two rows.
+
+**The rule:** initialize the destination of every converted list query
+(`xs := []T{}`, not `var xs []T`), and cover it with a Go assertion rather than
+a golden. `TestListResourceTypesEmptyIsAnArray`
+(`apitest/qms_resource_types_test.go`) is the pattern: empty the table inside a
+transaction that is rolled back, call the query function with that transaction,
+and assert the encoded form is `[]`. Rolling back matters — `resetDB`
+deliberately preserves reference tables, and deleting `resource_types` for real
+would cascade the seeded plan quota defaults away and break later goldens.
+
+**A note on consistency, since it will come up:** the pre-existing goqu code in
+the top-level `db` package (`db/plans.go:51`, `db/addons.go:117`) declares its
+destinations nil and therefore already returns `null` on empty. Accepting
+`null` in `/v1` would make the two trees agree. That is a real argument, but it
+is an argument for a follow-up branch that changes both trees deliberately —
+not for changing `/v1`'s contract as a side effect of a refactor whose success
+criterion is "nothing changed."
+
+## Converting a GORM `First()` to `ScanStruct`: check the predicate is unique
+
+`First()` emits `ORDER BY <primary key> LIMIT 1`; goqu's `ScanStruct` emits
+neither. It stops reading after the first row it gets, so the shape is similar,
+but two things are lost: the deterministic choice of *which* row, and the
+`LIMIT` that kept the database from producing the rest.
+
+In the resource-type conversion this is provably safe — `GetResourceTypeByName`
+filters on `name`, which is `UNIQUE` (`migrations/000002_plans.up.sql:30`), and
+`GetResourceTypeByID` filters on the primary key — so at most one row can
+match either way, and the transcription matches the house idiom at
+`db/resourcetypes.go:70-80`, which also omits both clauses.
+
+**The rule for Tasks 12-14:** before transcribing a `First()` into a bare
+`ScanStruct`, check whether the filter is backed by a unique constraint. When it
+isn't, the conversion silently swaps a deterministic row for an arbitrary one
+*and* streams the whole result set to pick it — so add an explicit `.Limit(1)`
+plus the `ORDER BY` that `First()` was applying. No golden will catch this
+either when the fixture data happens to have one matching row.
+
+## Two packages named `db` in `controllers`, both with a `GetResourceTypeByName`
+
+`internal/qmsapi/controllers` imports two different packages that are both
+named `db`: `github.com/cyverse-de/subscriptions/db` (root.go:9, the goqu layer
+the non-`/v1` routes use) and `github.com/cyverse-de/subscriptions/internal/qmsapi/db`
+(the `/v1` query layer). Go scopes imports per file, so this compiles, but it
+means a bare `db.GetResourceTypeByName` resolves to a different function
+depending on which file you are reading — and **both packages really do export
+that name** (`db/resourcetypes.go:89` and
+`internal/qmsapi/db/resource_types.go`). The two return different types and
+signal not-found differently, which is the soil the "four not-found
+conventions" trap grows in.
+
+**The convention:** alias the internal package as `qmsdb` in the `controllers`
+package, matching `app/app.go`, which already imports it that way.
+`controllers/resource_types.go` was converted to the alias in Task 11. The
+remaining controller files still import it bare; Tasks 12-14 should switch each
+one as they convert it, rather than in a separate sweep, so the alias change
+travels with the conversion it protects.

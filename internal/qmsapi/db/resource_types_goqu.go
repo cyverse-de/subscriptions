@@ -60,8 +60,10 @@ func GetResourceTypeByID(ctx context.Context, tx *goqu.TxDatabase, id string) (*
 func ListResourceTypes(ctx context.Context, tx *goqu.TxDatabase) (*model.ResourceTypeList, error) {
 	wrapMsg := "unable to list resource types"
 
+	// Initialized rather than declared nil so that an empty result marshals as [] and not null: goqu only touches the
+	// destination once per row, where GORM's Find replaced it with an empty slice before reading any.
 	// Deliberately unordered: the query this replaces had no ORDER BY, and adding one would reorder the response.
-	var resourceTypes []*model.ResourceType
+	resourceTypes := []*model.ResourceType{}
 	err := tx.From(t.RT).
 		Select(resourceTypeColumns...).
 		Executor().

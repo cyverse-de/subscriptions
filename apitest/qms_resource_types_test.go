@@ -1,9 +1,14 @@
 package apitest
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/cyverse-de/subscriptions/db"
+	qmsdb "github.com/cyverse-de/subscriptions/internal/qmsapi/db"
 )
 
 // resource_types is reference data the migrations seed and resetDB deliberately
@@ -100,5 +105,46 @@ func TestUpdateResourceType(t *testing.T) {
 	unit := queryString(t, `SELECT unit FROM resource_types WHERE id = $1`, id)
 	if unit != "gizmos" {
 		t.Errorf("stored unit = %q, want \"gizmos\"", unit)
+	}
+}
+
+// An empty listing has to marshal as [] rather than null, which no golden can
+// check: resource_types is seeded reference data, so every recorded response is
+// non-empty. The two layers disagree by default — GORM's Find replaced the
+// destination with an empty slice before reading any rows, while goqu only
+// touches it once per row — so a converted list query that declares its
+// destination nil silently changes the wire contract for callers that iterate
+// the result. The rows are removed inside a transaction that is rolled back,
+// because resetDB deliberately preserves them and the cascade would take the
+// seeded plan quota defaults with it.
+func TestListResourceTypesEmptyIsAnArray(t *testing.T) {
+	tx, err := db.New(testDB).Begin()
+	if err != nil {
+		t.Fatalf("unable to start the transaction: %s", err)
+	}
+	t.Cleanup(func() {
+		if err := tx.Rollback(); err != nil {
+			t.Fatalf("unable to roll the transaction back: %s", err)
+		}
+	})
+
+	if _, err = tx.Exec(`DELETE FROM resource_types`); err != nil {
+		t.Fatalf("unable to empty the resource_types table: %s", err)
+	}
+
+	listing, err := qmsdb.ListResourceTypes(context.Background(), tx)
+	if err != nil {
+		t.Fatalf("unable to list the resource types: %s", err)
+	}
+	if len(listing.ResourceTypes) != 0 {
+		t.Fatalf("listed %d resource types, want 0", len(listing.ResourceTypes))
+	}
+
+	encoded, err := json.Marshal(listing.ResourceTypes)
+	if err != nil {
+		t.Fatalf("unable to encode the resource type listing: %s", err)
+	}
+	if string(encoded) != "[]" {
+		t.Errorf("an empty listing encoded as %s, want []", encoded)
 	}
 }
