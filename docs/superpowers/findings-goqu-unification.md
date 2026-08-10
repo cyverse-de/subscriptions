@@ -98,3 +98,70 @@ be a real behavior change that happens not to break either golden (both only
 have one row), so it would ship silently. The single-row goldens plus the
 in-Go multi-row count/membership assertions are a deliberate workaround for
 an untestable ordering, not an oversight to "fix" by sorting.
+
+## `GET /summary/{user}`: every nested quota and usage has a blank `subscription_id`
+
+**Observed behavior:** in the response's `subscription.quotas[]` and
+`subscription.usages[]` arrays, every entry carries `"subscription_id": ""`
+rather than the real subscription UUID, even though the subscription itself
+is unambiguous (it's the same subscription the response is about).
+
+**Root cause — two different bugs, not one:**
+
+- **Usage:** the value is fetched from the database and then thrown away.
+  `SubscriptionUsages` (`db/userplans.go:253-268`) selects
+  `usages.subscription_id` into `Usage.SubscriptionID`
+  (`db/userplans.go:257`), so the struct genuinely holds the UUID after the
+  query runs. `Usage.ToQMSUsage()` (`db/types.go:441-450`) then builds its
+  return value without copying that field into `qms.Usage.SubscriptionId` —
+  the return literal only sets `Uuid`, `Usage`, `ResourceType`, `CreatedBy`,
+  `CreatedAt`, `LastModifiedBy`, `LastModifiedAt`. A real value is read and
+  silently dropped in the mapping function.
+- **Quota:** the value is never wired up to begin with. `Quota`
+  (`db/types.go:453-462`) has no `SubscriptionID` field at all, and
+  `SubscriptionQuotas`'s `Select` (`db/userplans.go:317-331`) never fetches
+  `quotas.subscription_id` — unlike its `Usage` counterpart, it doesn't even
+  reach the database for this column. `Quota.ToQMSQuota()`
+  (`db/types.go:464-474`) has nothing to copy even if it wanted to.
+
+**Why this isn't the same thing as the addon precedent:** `ToQMSSubscription`
+(`db/types.go:169-174`) blanks the nested addon's `SubscriptionId` too
+(`addons[i].SubscriptionId = ""`), and it is tempting to read the quota/usage
+gaps as "the same deliberate choice, just applied consistently." It isn't.
+For addons, `SubscriptionAddon.ToQMSType()` (`db/types.go:704-715`) first
+populates `SubscriptionId` from a real column, and the very next line in
+`ToQMSSubscription` explicitly overwrites it back to `""`. Someone populated
+the field and then chose to erase it — that's legible intent, and it's a
+single, deliberate site. Usage's blanking happens because a mapping function
+was never updated to include a field that was already available; quota's
+happens because the field and the query column were never added. Neither of
+those is a decision anyone made on purpose about what should appear in a
+`/summary/{user}` response; they're two different omissions that happen to
+produce the same visible symptom.
+
+**The field is not optional on the wire.** `qms.Quota` and `qms.Usage` both
+declare `SubscriptionId string` with a `json:"subscription_id"` tag and no
+`omitempty` — the schema expects a real value here, which is exactly why the
+JSON shows an explicit `""` rather than the field being absent.
+
+**Golden that pins it:** `apitest/testdata/summary_basic.json` and
+`apitest/testdata/summary_unknown_user.json` — both show `"subscription_id":
+""` on every entry in `quotas` and `usages`.
+
+**Currently harmless, but not because it's correct:** the one caller of this
+endpoint, resource-usage-api's `HTTPSummarizer.LoadSummary`
+(`internal/summarizer/httpsummarizer.go:83-113`), reads only `Uuid`,
+`Quota`/`Usage`, `ResourceType`, and `LastModifiedAt` off each entry; its own
+`clients.Quota`/`clients.Usage` structs don't even have a field to receive
+`SubscriptionID` if it were populated. No other consumer of
+`GET /summary/{user}` was found across terrain, apps, app-exposer, or
+data-usage-api. That bounds today's blast radius; it does not make the wire
+contract correct, and a future caller that does read `subscription_id` off a
+nested quota or usage would silently get the wrong thing (an empty string,
+not an error).
+
+**Why this is recorded despite being out of scope for the rewrite:**
+`GET /summary/{user}` is already goqu and is not touched by any later task in
+this branch's plan, so nobody translating a GORM query to goqu will pass
+through this code and rediscover it. Recording it here is the only way the
+knowledge survives past this task.
