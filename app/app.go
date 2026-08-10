@@ -116,6 +116,7 @@ func (a *App) RegisterQMSAPI(usernameSuffix string) error {
 	qmsapi.RegisterHandlers(controllers.Server{
 		Router:         a.Router,
 		DB:             a.db.DB,
+		GoquDB:         db.New(a.db),
 		GORMDB:         gormdb,
 		Service:        "subscriptions",
 		Title:          "CyVerse Subscriptions",

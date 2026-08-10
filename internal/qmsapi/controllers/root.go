@@ -6,7 +6,9 @@ import (
 	"net/http"
 
 	"github.com/cyverse-de/go-mod/logging"
+	"github.com/cyverse-de/subscriptions/db"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
+	"github.com/doug-martin/goqu/v9"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -15,8 +17,9 @@ import (
 var log = logging.Log.WithFields(logrus.Fields{"package": "controllers"})
 
 // txAbort carries an error response that has already been written to the client. model.Error returns nil once the
-// response is written, so returning it directly from a transaction callback tells GORM to commit the very write the
-// response is reporting as failed; wrapping it in an error GORM can see is what rolls the transaction back.
+// response is written, so returning it directly from a transaction callback tells the transaction machinery to commit
+// the very write the response is reporting as failed; wrapping it in an error that machinery can see is what rolls the
+// transaction back. It is shared by transaction and goquTransaction so both layers keep identical semantics.
 type txAbort struct {
 	response error
 }
@@ -33,8 +36,11 @@ func txError(ctx echo.Context, errStr string, status int) error {
 
 // Server defines the REST API of the qms
 type Server struct {
-	Router         *echo.Echo
-	DB             *sql.DB
+	Router *echo.Echo
+	DB     *sql.DB
+	// GoquDB is the query layer the /v1 handlers use. It replaces GORMDB; both
+	// are present only while the rewrite is in progress.
+	GoquDB         *db.Database
 	GORMDB         *gorm.DB
 	Service        string
 	Title          string
@@ -47,6 +53,25 @@ type Server struct {
 // that echo sees the handler's real return value.
 func (s Server) transaction(fn func(tx *gorm.DB) error) error {
 	err := s.GORMDB.Transaction(fn)
+
+	var abort txAbort
+	if errors.As(err, &abort) {
+		return abort.response
+	}
+
+	return err
+}
+
+// goquTransaction runs fn inside a database transaction, unwrapping the response written by any txError call within it
+// so that echo sees the handler's real return value. It is the goqu counterpart of transaction and shares txAbort, so a
+// handler converted from one to the other keeps its rollback semantics.
+func (s Server) goquTransaction(fn func(tx *goqu.TxDatabase) error) error {
+	tx, err := s.GoquDB.Begin()
+	if err != nil {
+		return err
+	}
+
+	err = tx.Wrap(func() error { return fn(tx) })
 
 	var abort txAbort
 	if errors.As(err, &abort) {

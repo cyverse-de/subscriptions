@@ -296,6 +296,89 @@ it actually returns. Recording it here, in the same terms as the
 task turned up consistent with each other rather than one being written down
 and the other only living in a report.
 
+## `goquTransaction` vs `transaction`: a failed ROLLBACK discards the `txAbort` marker
+
+**Observed behavior:** the two transaction helpers in
+`internal/qmsapi/controllers/root.go` — `transaction` (GORM, `:54`) and
+`goquTransaction` (goqu, `:68`) — agree on every path except one: when the
+callback returns an error *and the ROLLBACK itself then fails*, the GORM helper
+still returns the callback's error, while the goqu helper returns the rollback
+error instead. If the callback's error was a `txAbort`, the goqu helper's
+`errors.As` unwrapping never fires and the already-written response is not
+returned to echo.
+
+**Root cause:** it is a difference between the two libraries' wrappers, not
+between the two helpers' own code. `goqu`'s
+`(*TxDatabase).Wrap` (`goqu/v9@v9.19.0/database.go:631-648`) *replaces* the
+callback's error with the rollback error:
+
+```go
+defer func() {
+    if p := recover(); p != nil {
+        _ = td.Rollback()
+        panic(p)
+    }
+    if err != nil {
+        if rollbackErr := td.Rollback(); rollbackErr != nil {
+            err = rollbackErr
+        }
+    } else {
+        if commitErr := td.Commit(); commitErr != nil {
+            err = commitErr
+        }
+    }
+}()
+return fn()
+```
+
+GORM's `(*DB).Transaction` (`gorm@v1.31.2/finisher_api.go:662-667`) instead
+discards the rollback result entirely — `tx.Rollback()` is called for effect in
+a deferred block and its error is never assigned to the named return — so the
+callback's error always survives.
+
+**Why it is nonetheless safe to share `txAbort` between the two:** the
+divergence is unobservable over HTTP. `txAbort` is only ever constructed by
+`txError` (`root.go:33`), which builds it from `model.Error`, and `model.Error`
+(`internal/qmsapi/model/root.go:62`) has already written the response body via
+`ctx.JSON` by the time the wrapper sees anything. So on this path the response
+is committed, and `App.New`'s custom `HTTPErrorHandler` (`app/app.go:48-55`)
+returns early whenever `c.Response().Committed` is true. Under GORM the helper
+returns `abort.response` (normally `nil`, since `ctx.JSON` succeeded) and echo
+does nothing; under goqu the helper returns the rollback error and echo's
+handler drops it on the `Committed` check. Same bytes on the wire either way.
+The remaining difference is that a failed rollback is silent under GORM and
+merely unlogged-but-returned under goqu — and a `Rollback` that fails means the
+connection is already broken, which the pool discovers independently.
+
+**Panic and commit paths do agree**, which is worth stating explicitly since
+they are the paths a reviewer is most likely to worry about: both wrappers roll
+back and re-panic on a panic (goqu recovers, rolls back, and re-panics; GORM
+rolls back in its defer and lets the panic propagate), so `middleware.Recover`
+(`app/app.go:46`) still turns it into a 500; and both return the commit error
+when the callback succeeded but COMMIT failed.
+
+**Warning for Tasks 11-14:** do not "fix" this by capturing the callback's
+error in a closure variable and preferring it over `Wrap`'s return, and do not
+write a goqu-flavored copy of `txAbort`/`txError`. The first would put
+`goquTransaction` out of step with the rest of the goqu layer, which drives
+transactions with a bare `tx.Wrap` (`app/app.go`'s `addUserUpdate`, `:286`);
+the second would fork the contract the whole migration depends on. Both would
+be doing it to fix something with no observable effect. The single shared
+`txAbort` is what makes a handler moved from `transaction` to
+`goquTransaction` behave identically; keep it single.
+
+**One genuine non-equivalence to respect while converting:** GORM's
+`Transaction` detects that it is already inside a transaction and nests with a
+`SAVEPOINT` (`finisher_api.go:640-654`), whereas `goquTransaction` always calls
+`Begin()` and would therefore open a *second, independent* transaction — which
+can block on the first one's locks rather than nesting inside it. This is safe
+today because all ten `s.transaction` call sites are a top-level `return` from
+their handler (`plans.go:131`, `:204`, `:261`, `:327`, `:439`;
+`resource_types.go:182`; `users.go:65`, `:139`, `:208`, `:305`) and none is
+reached from inside another transaction callback. Converting them one group at
+a time preserves that only as long as no conversion introduces a nested call;
+thread the existing `tx` down instead of opening a new one.
+
 ## Golden-vs-`/v1`-counterpart comparison for the six retained goqu duplicates
 
 Each of the six goqu routes covered in `apitest/goqu_duplicates_test.go`
