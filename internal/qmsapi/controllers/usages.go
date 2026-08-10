@@ -97,7 +97,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 		// Look up the resource type.
 		resourceType, err := qmsdb.GetResourceTypeByName(ctx, tx, usage.ResourceName)
 		if errors.Is(err, qmsdb.ErrNotFound) {
-			return fmt.Errorf("resource type '%s' does not exist", usage.ResourceName)
+			return fmt.Errorf("%w: %s", ErrInvalidResourceName, usage.ResourceName)
 		}
 		if err != nil {
 			return err

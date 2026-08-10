@@ -1788,3 +1788,52 @@ checked only the status. Both use `assertNoDatabaseDetail`
 index`. Bare table names are deliberately **not** on that list: "subscriptions"
 and "users" are ordinary words in a sanitized message like `unable to list the
 user's subscriptions`, so matching them would flag the fix rather than the bug.
+
+## `POST /v1/usages` with an unknown `resource_name` answered 500, not 400
+
+**Observed behavior:** posting a usage naming a resource type that does not
+exist returned a 500. A caller with a typo in `resource_name` reads that as a
+server fault and retries forever, and the retries can never succeed.
+
+**Root cause:** the not-found branch in `addUsage`
+(`internal/qmsapi/controllers/usages.go`) returned a bare formatted error:
+
+```go
+resourceType, err := qmsdb.GetResourceTypeByName(ctx, tx, usage.ResourceName)
+if errors.Is(err, qmsdb.ErrNotFound) {
+    return fmt.Errorf("resource type '%s' does not exist", usage.ResourceName)
+}
+```
+
+`httpStatusCode` (same file) classifies by matching sentinels with `errors.Is`,
+and this error wraps none of them, so it fell through to the `default` arm and
+became a 500. The structurally identical `update_type` branch four lines below
+already did the right thing, wrapping `ErrInvalidUpdateType` with `%w` — the two
+paths simply disagreed.
+
+This is a fresh instance of the trap recorded in "Four not-found conventions
+coexist" above: the sentinel exists precisely to keep a missing row from
+becoming a 500, and this branch bypassed it. The branch was dead under GORM —
+the resource-type lookup could not report absence — so `goqu-unification` is
+the first release in which it is reachable in this form.
+
+**FIXED on `goqu-deferred-fixes`.** No new sentinel was needed:
+`ErrInvalidResourceName` already exists in the same `var` block, is already
+classified as a 400 by `httpStatusCode`, and is already used by the
+empty-`resource_name` check at the top of `addUsage`. The branch now reads
+
+```go
+return fmt.Errorf("%w: %s", ErrInvalidResourceName, usage.ResourceName)
+```
+
+which is character-for-character the shape of the `ErrInvalidUpdateType` branch
+below it, so the two paths agree.
+
+**No golden moved.** `usage_add_bad_update_type.json` pins the sibling
+update-type case and is untouched; nothing pinned the resource-name case, and
+`update_unknown_resource_type.json` belongs to the NATS route in `app`, not this
+handler. Covered by the `an unknown resource name is refused` subtest of
+`TestUsageEndpoints` (`apitest/qms_subscriptions_test.go`), asserted rather than
+goldened so the diff against `goqu-baseline` stays limited to the six files the
+earlier fixes own. Against the pre-fix code it fails with `status = 500, want
+400`.

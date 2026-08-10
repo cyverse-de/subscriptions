@@ -265,6 +265,28 @@ func TestUsageEndpoints(t *testing.T) {
 		)
 		assertGolden(t, "usage_add_bad_update_type", do(t, http.MethodPost, "/v1/usages", body), http.StatusBadRequest)
 	})
+
+	// A resource name that doesn't exist is bad input for the same reason, and
+	// the two branches sit four lines apart. This one returned a bare
+	// fmt.Errorf that httpStatusCode could not classify, so a caller with a
+	// typo got a 500 and a reason to retry forever. Asserted rather than
+	// goldened so the diff against goqu-baseline stays limited to the files the
+	// earlier fixes own.
+	t.Run("an unknown resource name is refused", func(t *testing.T) {
+		body := fmt.Sprintf(
+			`{"username": %q, "resource_name": "no.such.resource", "usage_value": 1, "update_type": "SET", "metadata": "{}"}`,
+			testUser,
+		)
+		got := do(t, http.MethodPost, "/v1/usages", body)
+		if got.status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body: %s", got.status, got.body)
+		}
+
+		errMsg, _ := mustDecode(t, got)["error"].(string)
+		if errMsg != "invalid resource name: no.such.resource" {
+			t.Errorf("error = %q, want %q", errMsg, "invalid resource name: no.such.resource")
+		}
+	})
 }
 
 // The bulk subscription endpoints. POST is the one terrain's admin
