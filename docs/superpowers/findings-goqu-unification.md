@@ -52,3 +52,49 @@ populate `resource_type` correctly, which is a behavior change, and would
 fail the branch's golden-diff success criterion. Reproduce the current,
 under-populated shape exactly. Fixing this is deliberately deferred to a
 follow-up change outside this branch.
+
+## `GET /v1/users` and `GET /v1/usages/{username}/updates`: no `ORDER BY`, rows come back in arbitrary order
+
+**Observed behavior:** both listings can return their rows in any order,
+because neither query sorts.
+
+**Root cause:**
+- `GetAllUsers` (`internal/qmsapi/controllers/users.go:38`) runs
+  `s.GORMDB.Find(&data)` with no `.Order(...)`.
+- `Server.userUpdates`, which backs `GetAllUsageUpdatesForUser`
+  (`internal/qmsapi/controllers/usages.go:189-204`), runs a GORM `Find` on
+  `updates` joined to `users` — also with no `.Order(...)`. The route handler
+  is at `usages.go:238-264`.
+
+Postgres makes no ordering guarantee for a `Find` without `ORDER BY`; with more
+than one row, physical row order (and therefore JSON array order) is
+unspecified and can change between runs or after a rewrite of the query.
+
+**Why it matters for goldens:** a golden file is a byte-for-byte comparison,
+so a golden built from a multi-row response would be flaky against these
+queries today, and — the sharper risk — a query that *happens* to return rows
+in a stable order right now would silently break as soon as it's rewritten,
+even without a real behavior change.
+
+**How each is pinned:** rather than widening the harness's
+`unorderedFields` (which keys on `"result"`, a field name shared by every
+`/v1` response — sorting it would also sort `subscriptions_list`, whose whole
+point is proving `sort-field=username&sort-dir=asc` works), each route is
+pinned two ways:
+- A golden over the single-row case, where order is unobservable:
+  `apitest/testdata/v1_users_single.json` (`TestListUsersSingle`) and
+  `apitest/testdata/v1_usage_updates_single.json`
+  (`TestListUsageUpdates`).
+- An order-insensitive assertion in Go over a multi-row case, checking only
+  that every row comes back (`TestListUsersReturnsEveryUser` in
+  `apitest/qms_root_test.go`; `TestListUsageUpdatesReturnsEveryUpdate` in
+  `apitest/qms_usage_updates_test.go`).
+
+**Warning for the goqu rewrite:** translating a GORM `Find` to goqu is a
+natural place to add an `ORDER BY` — goqu's query builder makes sorting easy
+to reach for, and it looks like a strict improvement. **Do not add one to
+either query.** The absent ordering is current behavior; adding it here would
+be a real behavior change that happens not to break either golden (both only
+have one row), so it would ship silently. The single-row goldens plus the
+in-Go multi-row count/membership assertions are a deliberate workaround for
+an untestable ordering, not an oversight to "fix" by sorting.
