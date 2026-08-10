@@ -961,6 +961,32 @@ unsound key, a forbidden positional match, and dropping an unread value, the
 value is dropped — and a future caller that needs these ids should re-read the
 plan, which is what both handlers already do.
 
+**The empty-input path was preserved deliberately, and it is the one place a
+length guard carries an error rather than a silent success.** A request body of
+`{}` reaches both saves: `NewPlanQuotaDefaultList.Validate` and
+`NewPlanRateList.Validate` (`internal/qmsapi/httpmodel/new_plan.go`) both accept
+an empty list. GORM's `Create` rejected a zero-length destination slice with
+`gorm.ErrEmptySlice` (`gorm@v1.31.2/callbacks/create.go:277-280`), so
+`POST /v1/plans/{id}/quota-defaults` and `POST /v1/plans/{id}/rates` answered
+**500** with `unable to save the plan … : empty slice found`. goqu raises
+nothing for the same input — it emits `INSERT INTO … DEFAULT VALUES`
+(`sqlgen/insert_sql_generator.go:101,115`), which would write a garbage row — so
+a length guard is required either way, and returning `nil` from it would have
+turned that 500 into a 200. `qmsdb.ErrEmptySlice` reproduces GORM's wording so
+the response body is unchanged too.
+
+**The same guard must not fire on the cascaded path.** GORM only rejected an
+empty slice at the *top level*; `saveAssociations` skips a `has many` relation
+whose element list is empty (`callbacks/associations.go:252`), so
+`POST /v1/plans` with neither `plan_quota_defaults` nor `plan_rates` succeeded
+with a 200. `SavePlan` therefore checks the length itself and skips the call
+rather than passing an empty slice on to a function that now rejects one.
+
+`TestPlanWritesWithEmptyInput` (`apitest/qms_plan_empty_input_test.go`) pins all
+three cases in Go rather than as goldens, and was confirmed to pass unchanged
+against the `goqu-baseline` tag in a scratch worktree before the conversion was
+trusted.
+
 `SavePlan` also drops the `INSERT INTO resource_types ... ON CONFLICT DO
 NOTHING` that GORM emitted once per quota default. That statement was GORM
 saving the `belongs to` association before inserting the child row; every

@@ -3,6 +3,7 @@ package apitest
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/cyverse-de/subscriptions/db"
@@ -53,13 +54,17 @@ func TestEmptyPlanListingsAreArrays(t *testing.T) {
 				}
 			})
 
-			if _, err = tx.Exec(tc.prepare); err != nil {
+			ctx := context.Background()
+			if _, err = tx.ExecContext(ctx, tc.prepare); err != nil {
 				t.Fatalf("unable to empty the table the listing reads: %s", err)
 			}
 
-			listing, err := tc.list(context.Background(), tx)
+			listing, err := tc.list(ctx, tx)
 			if err != nil {
 				t.Fatalf("unable to list: %s", err)
+			}
+			if n := reflect.ValueOf(listing).Len(); n != 0 {
+				t.Fatalf("listed %d rows, want 0", n)
 			}
 
 			encoded, err := json.Marshal(listing)

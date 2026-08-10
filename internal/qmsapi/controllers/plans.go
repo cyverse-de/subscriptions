@@ -88,8 +88,7 @@ func (s Server) GetPlanByID(ctx echo.Context) error {
 		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("plan ID %s not found", planID)
 			return txError(ctx, msg, http.StatusNotFound)
-		}
-		if err != nil {
+		} else if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
@@ -150,8 +149,7 @@ func (s Server) AddPlan(ctx echo.Context) error {
 			if errors.Is(err, qmsdb.ErrNotFound) {
 				msg := fmt.Sprintf("resource type not found: %s", planQuotaDefault.ResourceType.Name)
 				return txError(ctx, msg, http.StatusBadRequest)
-			}
-			if err != nil {
+			} else if err != nil {
 				return txError(ctx, err.Error(), http.StatusInternalServerError)
 			}
 			dbPlan.PlanQuotaDefaults[i].ResourceType = *resourceType

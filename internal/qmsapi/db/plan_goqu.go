@@ -254,6 +254,9 @@ func GetActivePlanQuotaDefaults(
 // SavePlan saves a new plan along with its quota defaults and rates, recording the generated plan identifier on the
 // plan the caller is holding. GORM saved the quota defaults and rates as associations of the plan; they are separate
 // statements here, which is what it emitted anyway.
+//
+// Only the plan's own identifier is recorded: the quota defaults and rates keep the nil IDs they arrived with, so a
+// caller that needs them has to re-read the plan with GetPlanByID, which is what every caller does today.
 func SavePlan(ctx context.Context, tx *goqu.TxDatabase, plan *model.Plan) error {
 	wrapMsg := "unable to save the plan"
 
@@ -271,25 +274,34 @@ func SavePlan(ctx context.Context, tx *goqu.TxDatabase, plan *model.Plan) error 
 	}
 	plan.ID = &planID
 
-	for i := range plan.PlanQuotaDefaults {
-		plan.PlanQuotaDefaults[i].PlanID = &planID
-	}
-	if err = SavePlanQuotaDefaults(ctx, tx, plan.PlanQuotaDefaults); err != nil {
-		return fmt.Errorf("%s: %w", wrapMsg, err)
+	// An empty listing is skipped rather than passed on, because the two saves reject one. GORM drew the same
+	// distinction: its top-level Create rejected a zero-length slice, but it skipped an association that had no rows,
+	// so a plan created with neither quota defaults nor rates succeeds.
+	if len(plan.PlanQuotaDefaults) > 0 {
+		for i := range plan.PlanQuotaDefaults {
+			plan.PlanQuotaDefaults[i].PlanID = &planID
+		}
+		if err = SavePlanQuotaDefaults(ctx, tx, plan.PlanQuotaDefaults); err != nil {
+			return fmt.Errorf("%s: %w", wrapMsg, err)
+		}
 	}
 
-	for i := range plan.PlanRates {
-		plan.PlanRates[i].PlanID = &planID
-	}
-	if err = SavePlanRates(ctx, tx, plan.PlanRates); err != nil {
-		return fmt.Errorf("%s: %w", wrapMsg, err)
+	if len(plan.PlanRates) > 0 {
+		for i := range plan.PlanRates {
+			plan.PlanRates[i].PlanID = &planID
+		}
+		if err = SavePlanRates(ctx, tx, plan.PlanRates); err != nil {
+			return fmt.Errorf("%s: %w", wrapMsg, err)
+		}
 	}
 
 	return nil
 }
 
 // SavePlanQuotaDefaults saves the given plan quota defaults. Each one must carry a plan ID and identify its resource
-// type, either directly or through the embedded resource type.
+// type, either directly or through the embedded resource type. Saving nothing is an error, matching what GORM's Create
+// did with a zero-length slice; callers with a possibly-empty listing have to decide for themselves, the way SavePlan
+// does.
 //
 // The generated identifiers are deliberately not read back. GORM recorded them on the structs it was given, but no
 // caller reads them, and the only key that could match a RETURNING row to the quota default that produced it includes
@@ -299,7 +311,7 @@ func SavePlanQuotaDefaults(ctx context.Context, tx *goqu.TxDatabase, planQuotaDe
 	wrapMsg := "unable to save the plan quota defaults"
 
 	if len(planQuotaDefaults) == 0 {
-		return nil
+		return fmt.Errorf("%s: %w", wrapMsg, ErrEmptySlice)
 	}
 
 	rows := make([]any, 0, len(planQuotaDefaults))
@@ -341,13 +353,13 @@ func quotaDefaultResourceTypeID(planQuotaDefault model.PlanQuotaDefault) (string
 		planQuotaDefault.ResourceType.Name)
 }
 
-// SavePlanRates saves the given plan rates, each of which must carry a plan ID. The generated identifiers are not read
-// back, for the same reason they aren't in SavePlanQuotaDefaults.
+// SavePlanRates saves the given plan rates, each of which must carry a plan ID. Saving nothing is an error, and the
+// generated identifiers are not read back, both for the same reasons they are in SavePlanQuotaDefaults.
 func SavePlanRates(ctx context.Context, tx *goqu.TxDatabase, planRates []model.PlanRate) error {
 	wrapMsg := "unable to save the plan rates"
 
 	if len(planRates) == 0 {
-		return nil
+		return fmt.Errorf("%s: %w", wrapMsg, ErrEmptySlice)
 	}
 
 	rows := make([]any, 0, len(planRates))
