@@ -10,8 +10,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// GetResourceTypeByName looks up the resource type with the given name.
-func GetResourceTypeByName(ctx context.Context, db *gorm.DB, name string) (*model.ResourceType, error) {
+// GetResourceTypeByNameGORM looks up the resource type with the given name.
+func GetResourceTypeByNameGORM(ctx context.Context, db *gorm.DB, name string) (*model.ResourceType, error) {
 	wrapMsg := fmt.Sprintf("unable to look up resource type '%s'", name)
 	var err error
 
@@ -26,8 +26,8 @@ func GetResourceTypeByName(ctx context.Context, db *gorm.DB, name string) (*mode
 	return &resourceType, nil
 }
 
-// GetResourceTypeByID looks up the resource type with the given identifier.
-func GetResourceTypeByID(ctx context.Context, db *gorm.DB, id string) (*model.ResourceType, error) {
+// GetResourceTypeByIDGORM looks up the resource type with the given identifier.
+func GetResourceTypeByIDGORM(ctx context.Context, db *gorm.DB, id string) (*model.ResourceType, error) {
 	wrapMsg := fmt.Sprintf("unable to look up resource type '%s'", id)
 	var err error
 
@@ -42,8 +42,8 @@ func GetResourceTypeByID(ctx context.Context, db *gorm.DB, id string) (*model.Re
 	return &resourceType, nil
 }
 
-// ListResourceTypes lists all of the resource types defined in the database.
-func ListResourceTypes(ctx context.Context, db *gorm.DB) (*model.ResourceTypeList, error) {
+// ListResourceTypesGORM lists all of the resource types defined in the database.
+func ListResourceTypesGORM(ctx context.Context, db *gorm.DB) (*model.ResourceTypeList, error) {
 	wrapMsg := "unable to list resource types"
 	var err error
 
@@ -56,8 +56,8 @@ func ListResourceTypes(ctx context.Context, db *gorm.DB) (*model.ResourceTypeLis
 	return &model.ResourceTypeList{ResourceTypes: resourceTypes}, nil
 }
 
-// UpdateResourceType updates an existing resource type.
-func UpdateResourceType(ctx context.Context, db *gorm.DB, resourceType model.ResourceType) error {
+// UpdateResourceTypeGORM updates an existing resource type.
+func UpdateResourceTypeGORM(ctx context.Context, db *gorm.DB, resourceType model.ResourceType) error {
 	wrapMsg := "unable to update resource type"
 	var err error
 
@@ -75,8 +75,8 @@ func UpdateResourceType(ctx context.Context, db *gorm.DB, resourceType model.Res
 	return nil
 }
 
-// SaveResourceType saves a new resource type.
-func SaveResourceType(ctx context.Context, db *gorm.DB, resourceType model.ResourceType) (*model.ResourceType, error) {
+// SaveResourceTypeGORM saves a new resource type.
+func SaveResourceTypeGORM(ctx context.Context, db *gorm.DB, resourceType model.ResourceType) (*model.ResourceType, error) {
 	wrapMsg := "unable to save resource type"
 	var err error
 

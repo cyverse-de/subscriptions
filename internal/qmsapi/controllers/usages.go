@@ -85,7 +85,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 		log.Debugf("active plan is %s", subscription.Plan.Name)
 
 		// Look up the resource type.
-		resourceType, err := db.GetResourceTypeByName(ctx, tx, usage.ResourceName)
+		resourceType, err := db.GetResourceTypeByNameGORM(ctx, tx, usage.ResourceName)
 		if err != nil {
 			return err
 		}

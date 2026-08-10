@@ -138,7 +138,7 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 	// Start a transaction.
 	return s.transaction(func(tx *gorm.DB) error {
 		// Look up the resource type.
-		resourceType, err := db.GetResourceTypeByName(ctx, tx, resourceTypeName)
+		resourceType, err := db.GetResourceTypeByNameGORM(ctx, tx, resourceTypeName)
 		if err != nil {
 			log.Error(err)
 			return txError(c, err.Error(), http.StatusInternalServerError)

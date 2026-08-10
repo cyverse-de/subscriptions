@@ -141,7 +141,7 @@ func (s Server) AddPlan(ctx echo.Context) error {
 
 		// Look up each resource type and update it in the struct.
 		for i, planQuotaDefault := range dbPlan.PlanQuotaDefaults {
-			resourceType, err := db.GetResourceTypeByName(context, tx, planQuotaDefault.ResourceType.Name)
+			resourceType, err := db.GetResourceTypeByNameGORM(context, tx, planQuotaDefault.ResourceType.Name)
 			if err != nil {
 				return txError(ctx, err.Error(), http.StatusInternalServerError)
 			}
@@ -343,7 +343,7 @@ func (s Server) AddPlanQuotaDefaults(ctx echo.Context) error {
 		}
 
 		// Retireve the list of resource types from the database.
-		resourceTypeList, err := db.ListResourceTypes(context, tx)
+		resourceTypeList, err := db.ListResourceTypesGORM(context, tx)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}

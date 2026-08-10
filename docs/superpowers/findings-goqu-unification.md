@@ -523,3 +523,84 @@ would either change what the `/v1` routes return today (a real behavior
 change for their actual callers) or drop what the goqu routes return
 (removing the reason to have kept them). Whoever makes the collapse call
 later needs to know that asymmetry going in.
+
+## Task 11: converting a shared query function means forking it, not editing it
+
+Task 11's brief said to change all five functions in
+`internal/qmsapi/db/resource_types.go` so their `*gorm.DB` parameter becomes a
+`*goqu.TxDatabase`. Taken literally that breaks three handlers that no task
+converts until later, because two of the five have callers outside
+`controllers/resource_types.go`:
+
+| function | external callers |
+|---|---|
+| `GetResourceTypeByName` | `plans.go:144`, `usages.go:88`, `users.go:141` |
+| `ListResourceTypes` | `plans.go:346` |
+| `GetResourceTypeByID`, `UpdateResourceType`, `SaveResourceType` | none |
+
+All four external call sites sit **inside GORM transaction callbacks**. Changing
+the shared signature would either fail to compile or force those handlers to
+hold a GORM transaction and a goqu transaction at once — the self-deadlock
+described above, which the golden gate cannot catch.
+
+**The pattern Tasks 12-14 should reuse:** put the goqu implementations in a new
+`*_goqu.go` file under the canonical names, rename the GORM originals in place
+with a `GORM` suffix (`GetResourceTypeByNameGORM`, `ListResourceTypesGORM`, …),
+and repoint the not-yet-converted callers at the renamed functions. The rename
+is mechanical and behavior-free, it makes the remaining GORM surface
+self-labelling, and Task 15 deletes each `*GORM` function once its last caller
+is gone. Converting a shared query in place is only safe when every caller is
+converted in the same change.
+
+## `PUT /v1/resource-types/{id}`: a failed homonym lookup is reported as 409, not 500
+
+`UpdateResourceType`'s handler checks for an existing resource type with the
+new name, and reports **any** error from that lookup as
+`http.StatusConflict`:
+
+```go
+homonym, err := db.GetResourceTypeByName(context, tx, inboundResourceType.Name)
+if err != nil {
+    return txError(ctx, err.Error(), http.StatusConflict)
+}
+```
+
+A dead connection or a malformed query is not a naming conflict, so a genuine
+server fault is reported to the client as "you picked a name that's taken,"
+with the raw database error as the message body. The sibling check three lines
+above (`GetResourceTypeByID`) maps its errors to 500, which is what makes the
+409 here look like a copy-and-paste slip rather than a decision.
+
+**Nothing pins it:** no golden covers a failing lookup, so this is invisible to
+the gate in both directions.
+
+**How the goqu conversion preserved it:** the GORM version returned
+`(nil, nil)` for "no such name," so only a real failure reached the `err != nil`
+branch. The goqu version returns an error matching `qmsdb.ErrNotFound` instead,
+so the converted handler reads
+`if err != nil && !errors.Is(err, db.ErrNotFound)` — absence is still not a
+conflict, and every other error still yields the same 409 it did before. Do not
+"fix" the status code while converting; it is current behavior, and repairing it
+belongs in a follow-up change outside this branch.
+
+## Converted read handlers now open a transaction, which changes the body of a database-down 500
+
+`ListResourceTypes`, `AddResourceType`, and `GetResourceTypeDetails` ran their
+queries directly against `s.GORMDB` with no explicit transaction. Their goqu
+replacements take a `*goqu.TxDatabase` (per `CLAUDE.md`: every database function
+takes a transaction), so each handler now wraps its work in
+`s.goquTransaction`.
+
+The one observable consequence is on the `Begin()` failure path. Previously a
+database failure surfaced from the query and was rendered by `model.Error`, so
+the client got the QMS envelope (`{"status": "Internal Server Error", "error":
+"…"}`). A failure to BEGIN happens before the handler body runs, so
+`goquTransaction` returns the raw error to echo, and `App.New`'s
+`HTTPErrorHandler` default branch (`app/app.go:70-74`) renders
+`common.NewErrorResponse(err)` — a different JSON shape, same 500 status.
+
+This only fires when the database is unreachable, and it already applied to
+every handler that used `s.transaction`, so it is not new to the goqu layer. It
+is recorded because Tasks 12-14 convert more transaction-less handlers and will
+widen the set of routes it applies to, and because it is not reachable from any
+golden.
