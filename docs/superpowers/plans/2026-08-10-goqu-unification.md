@@ -1068,144 +1068,336 @@ git commit -m "Rewrite the resource-type queries against goqu"
 
 ---
 
-### Task 12: User and usage queries
+> **Phase 2 was re-decomposed after Task 11.** The original Tasks 12-14 were
+> scoped by database file (`user.go`, `plan.go`, `subscriptions.go`). That
+> cannot satisfy the whole-handler rule Task 10 established, because handlers
+> cut across those files — `controllers/users.go` alone depends on `user.go`,
+> `plan.go` and `subscriptions.go` — and the db files are tangled with each
+> other (`subscriptions.go` calls `GetPlan` and `GetUser`). Converting by db
+> file would leave a handler holding a GORM transaction and a goqu transaction
+> at once, which self-deadlocks against the connection pool and hangs rather
+> than erroring. Tasks 12-15 below are therefore scoped by **controller file**,
+> in dependency order, so each converts a handler set whole. Task 11's
+> resource-type work is unaffected — it was a leaf.
+
+### The shared pattern for Tasks 12-15
+
+Every task in this phase follows the same shape. It is written once here rather
+than repeated four times.
+
+**Coexist, then delete.** goqu implementations take the canonical names in a new
+`*_goqu.go` file beside the GORM original. The GORM original is renamed in place
+with a `GORM` suffix, and its remaining call sites are repointed to the suffixed
+name — a pure mechanical rename. Task 16 deletes the leftovers once the last
+caller is gone. Task 11 established this in
+`internal/qmsapi/db/resource_types_goqu.go` and
+`internal/qmsapi/db/resource_types.go`; follow it exactly.
+
+**Convert each handler whole.** No request may hold a GORM transaction and a
+goqu transaction at the same time. Convert every handler in the task's
+controller file, and every query function those handlers reach.
+
+**Shared query functions are written once.** A function a later task also needs
+is written in full here, in its own `*_goqu.go` file, and reused. The dependency
+order below is chosen so that each task's new functions are ones no earlier task
+needed.
+
+**Rules recorded in `docs/superpowers/findings-goqu-unification.md`.** Read it
+before writing code. It is the phase contract, and it carries at minimum:
+
+- Every list conversion must initialize its destination slice. goqu's
+  `scanIntoSlice` leaves a nil slice on zero rows (`[]` becomes `null`), where
+  GORM's `Find` pre-allocated. **No golden in the suite can catch this** — every
+  list golden is seeded or fixture-backed and therefore non-empty. Tasks 12-15
+  convert endpoints where emptiness is routine.
+- Absence is `found == false`, not `sql.ErrNoRows`. goqu's `ScanStructContext`
+  returns `(false, nil)`. Translate to `qmsdb.ErrNotFound` **inside the query
+  function**, never in a handler, and match with `errors.Is`.
+- Converting a GORM `First()`: it emitted `ORDER BY <pk> LIMIT 1`. If the
+  predicate is not unique, add `.Limit(1)` and a matching `ORDER BY`.
+- Alias the internal package as `qmsdb` in each controller file as you convert
+  it. Two packages named `db` are in play and both define a
+  `GetResourceTypeByName`.
+- Use goqu's `*Context` query variants on the `tx`; `goquTransaction` starts the
+  transaction without a context.
+
+**The gate, every task:**
+
+```
+go test ./... -count=1                              # must pass
+git diff goqu-baseline -- apitest/testdata/         # must be EMPTY
+golangci-lint run                                   # must be clean
+```
+
+A changed golden means changed behavior. Fix the code, never the golden.
+
+---
+
+### Task 12: Convert `controllers/usages.go`
 
 **Files:**
-- Modify: `internal/qmsapi/db/user.go`, `internal/qmsapi/db/usage.go`
-- Modify: `internal/qmsapi/controllers/users.go:38,65,139,208,305,413`
-- Modify: `internal/qmsapi/controllers/usages.go:78,105,193,223`
-- Modify: `internal/qmsapi/controllers/util.go:16`
+- Create: `internal/qmsapi/db/usage_goqu.go`
+- Modify: `internal/qmsapi/db/usage.go` (rename `UpsertUsage` → `UpsertUsageGORM`)
+- Create or extend: a goqu home for `GetActiveSubscriptionDetails`
+- Modify: `internal/qmsapi/db/subscriptions.go` (rename only the functions this task converts)
+- Modify: `internal/qmsapi/controllers/usages.go`
 
 **Interfaces:**
-- Consumes: Task 10's plumbing.
-- Produces: `GetUser`, `UserExists`, `UpsertUsage` with the `*gorm.DB` parameter replaced.
+- Consumes: `Server.GoquDB`, `Server.goquTransaction`, `qmsdb.ErrNotFound` (Task 10); `qmsdb.GetResourceTypeByName` (Task 11, already goqu).
+- Produces: goqu `UpsertUsage` and `GetActiveSubscriptionDetails`, both reused by Tasks 14 and 15.
 
-Gated by Tasks 1, 5, 6 and the existing `usage_*`, `user_plan_*`, `add_user_*` goldens.
+The smallest controller, chosen first so the per-controller pattern is proven
+cheaply. Four handlers, and only two query functions to convert.
 
-Three behaviors to preserve deliberately:
-- **`GET /v1/users/{username}/plan` writes on read.** `GetSubscriptionDetails` creates a user the service has never seen and subscribes them to the default plan, returning 200 rather than 404. Terrain depends on it: a user who has never touched QMS still gets a plan back on first login. The golden `user_plan_autocreated` pins it. A goqu rewrite that "corrects" this into a 404 breaks terrain.
-- `GetAllUsers` (`users.go:38`) and `userUpdates` (`usages.go:193`) have **no `ORDER BY`**. Do not add one — that would be a behavior change, and Tasks 1 and 5 golden only the single-row case precisely so this stays honest. Record the absent ordering in the findings file instead.
-- `UpsertUsage` uses a GORM `clause` for its conflict handling; the goqu version needs the same `ON CONFLICT` semantics or repeated usage updates will insert instead of update, which `TestUsageWritesAnUpdatesRow` will catch.
+Transaction sites here include two that bypass `s.transaction` with raw
+`s.GORMDB.Transaction(...)`: `usages.go:78` and `usages.go:223`. Both must move
+to `s.goquTransaction`.
 
-- [ ] **Step 1: Confirm the gate passes before changing anything**
+Behavior pinned by Phase 1 that must not move: `apitest/testdata/usage_add_set.json`,
+`usage_add_add.json`, `usage_add_bad_update_type.json`, `usage_list_after_set.json`,
+`usage_list_after_add.json`, `usages_after_set.json`, `v1_usage_updates_single.json`,
+plus `TestUsageWritesAnUpdatesRow` in `apitest/qms_divergence_test.go`, which
+asserts one `updates` audit row per usage change **and** that the recorded
+operation is the one actually requested (`SET` then `ADD`) — a previously-fixed
+GORM bug that must not return.
 
-Run: `go test ./apitest/ -run 'TestListUsers|TestListUsageUpdates|TestAddUserResponse|TestUsageEndpoints|TestUsageWritesAnUpdatesRow' -count=1 -v`
-Expected: PASS.
+`UpsertUsage` uses a GORM `clause` for conflict handling. The goqu version needs
+the same `ON CONFLICT` target and action, or repeated usage updates insert
+instead of update — which `TestUsageWritesAnUpdatesRow` will catch.
 
-- [ ] **Step 2: Rewrite `db/user.go` and `db/usage.go` against goqu**
+`userUpdates` (`usages.go:193`) has **no `ORDER BY`**. Do not add one; the absent
+ordering is current behavior, and Task 5 goldened only the single-row case
+precisely so this stays honest.
 
-- [ ] **Step 3: Replace the inline GORM calls in the three controllers**
-
-- [ ] **Step 4: Run the gate**
-
-Run: `go test ./apitest/ -run 'TestListUsers|TestListUsageUpdates|TestAddUserResponse|TestUsageEndpoints|TestUsageWritesAnUpdatesRow' -count=1 -v`
-Expected: PASS.
-
-- [ ] **Step 5: Run the full suite and diff the goldens**
+- [ ] **Step 1: Confirm the gate is green before changing anything**
 
 Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/`
-Expected: PASS, and an empty diff.
+Expected: PASS, empty diff. A later failure is then attributable to this task.
+
+- [ ] **Step 2: Write the goqu query functions**
+
+`UpsertUsage` and `GetActiveSubscriptionDetails`, following the Task 11 pattern.
+
+- [ ] **Step 3: Rename the GORM originals and repoint any remaining callers**
+
+- [ ] **Step 4: Convert all four handlers in `usages.go`, whole**
+
+Including the two raw `s.GORMDB.Transaction` sites at `:78` and `:223`.
+
+- [ ] **Step 5: Run the gate**
+
+Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/ && golangci-lint run`
+Expected: PASS, empty diff, clean lint.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add internal/qmsapi/db/user.go internal/qmsapi/db/usage.go internal/qmsapi/controllers/users.go internal/qmsapi/controllers/usages.go internal/qmsapi/controllers/util.go
-git commit -m "Rewrite the user and usage queries against goqu"
+git add -A
+git commit -m "Convert the usage handlers to goqu"
 ```
 
 ---
 
-### Task 13: Plan queries
+### Task 13: Convert `controllers/plans.go`
 
 **Files:**
-- Modify: `internal/qmsapi/db/plan.go` (all 10 functions)
-- Modify: `internal/qmsapi/controllers/plans.go:43,83,131,204,261,327,439`
+- Create: `internal/qmsapi/db/plan_goqu.go`
+- Modify: `internal/qmsapi/db/plan.go` (rename the converted functions with a `GORM` suffix)
+- Modify: `internal/qmsapi/controllers/plans.go`
 
 **Interfaces:**
-- Consumes: Task 10's plumbing.
-- Produces: `GetPlan`, `CheckPlanNameExistence`, `CheckPlanExistence`, `GetPlanByID`, `GetActivePlanRate`, `GetActivePlanQuotaDefaults`, `ListPlans`, `GetDefaultQuotaForPlan`, `GetPlansByName`, `SavePlanQuotaDefaults`, `SavePlanRates` with the `*gorm.DB` parameter replaced.
+- Consumes: Task 10's plumbing; `qmsdb.GetResourceTypeByName` and `qmsdb.ListResourceTypes` (Task 11).
+- Produces: goqu `GetPlan`, `GetPlanByID`, `CheckPlanExistence`, `CheckPlanNameExistence`, `GetActivePlanRate`, `GetActivePlanQuotaDefaults`, `ListPlans`, `GetDefaultQuotaForPlan`, `GetPlansByName`, `SavePlanQuotaDefaults`, `SavePlanRates`. `GetPlan` and `GetPlanByID` are reused by Tasks 14 and 15.
 
-Gated by Tasks 3 and 4, plus the existing `plans_list`, `plans_get_basic` goldens and `TestAddPlanQuotaDefaults`.
+**This is where the `Preload` ordering risk lands.** `ListPlans`, `GetPlan` and
+`GetPlanByID` each use `Preload` with an inner ordering closure
+(`plan.go:24-33`, `:92-101`, `:166-175`). GORM issues those as separate queries;
+a goqu join will not reproduce their order for free. Read each closure and carry
+its `ORDER BY` into the goqu query explicitly. The harness sorts
+`plan_quota_defaults` and `plan_rates` via `unorderedFields`, so a mismatch
+*there* will not fail — but the top-level plan list is **not** in that set and
+will.
 
-**This is where the Preload-ordering risk bites.** `ListPlans`, `GetPlan` and `GetPlanByID` each use `Preload` with an inner ordering closure (`db/plan.go:24-33,92-101,166-175`). GORM issues those as separate queries; a goqu join will not reproduce their order for free. Read each closure and carry its `ORDER BY` into the goqu query explicitly. The harness already sorts `plan_quota_defaults` and `plan_rates` via `unorderedFields`, so a mismatch there will not fail — but the top-level plan list is **not** in that set and will.
+**Do not add the missing `ResourceType` preload to `GetActivePlanQuotaDefaults`.**
+The findings doc records it: that function never preloads `ResourceType`, so
+`omitempty` collapses each `resource_type` to `{"consumable": false}`, and
+`apitest/testdata/v1_plan_active_quota_defaults.json` pins it. Adding the join is
+the most natural thing to do while translating and would break the golden.
+Fixing it is deliberately deferred to a follow-up branch.
 
-- [ ] **Step 1: Confirm the gate passes before changing anything**
+Goldens pinning this controller: `plans_list.json`, `plans_get_basic.json`,
+`v1_plan_created.json`, `v1_plan_no_name.json`, `v1_plan_rates_added.json`,
+`v1_plan_active_rate.json`, `v1_plan_active_quota_defaults.json`, and the two
+`*_unknown.json` 404 cases. Note the unknown-plan 404s come from
+`CheckPlanExistence`'s `count(*) > 0` query, not from a not-found error — that
+is why they are clean 404s today, and the goqu version must keep the same shape.
 
-Run: `go test ./apitest/ -run 'Plan' -count=1 -v`
-Expected: PASS.
+- [ ] **Step 1: Confirm the gate is green before changing anything**
 
-- [ ] **Step 2: Read every Preload closure in `db/plan.go` and write down its ordering**
+Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/`
+
+- [ ] **Step 2: Record each `Preload` closure's ordering before converting**
 
 Run: `grep -n -A4 'Preload' internal/qmsapi/db/plan.go`
 
-- [ ] **Step 3: Rewrite the ten query functions against goqu, carrying each ordering across**
+- [ ] **Step 3: Write the goqu query functions, carrying each ordering across**
 
-- [ ] **Step 4: Replace the inline GORM calls in `controllers/plans.go`**
+- [ ] **Step 4: Rename the GORM originals and repoint remaining callers**
 
-- [ ] **Step 5: Run the gate**
+- [ ] **Step 5: Convert every handler in `plans.go`, whole**
 
-Run: `go test ./apitest/ -run 'Plan' -count=1 -v`
-Expected: PASS.
+- [ ] **Step 6: Run the gate**
 
-- [ ] **Step 6: Run the full suite and diff the goldens**
+Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/ && golangci-lint run`
 
-Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/`
-Expected: PASS, and an empty diff. A diff in `plans_list.json` means an ordering mismatch — fix the query, not the golden.
+A diff in `plans_list.json` means an ordering mismatch. Fix the query, not the golden.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add internal/qmsapi/db/plan.go internal/qmsapi/controllers/plans.go
-git commit -m "Rewrite the plan queries against goqu"
+git add -A
+git commit -m "Convert the plan handlers to goqu"
 ```
 
 ---
 
-### Task 14: Subscription queries
+### Task 14: Convert `controllers/users.go` and `controllers/util.go`
 
 **Files:**
-- Modify: `internal/qmsapi/db/subscriptions.go` (446 lines, all functions)
-- Modify: `internal/qmsapi/controllers/subscriptions.go:34,81,223,232,316`
+- Create: `internal/qmsapi/db/user_goqu.go`
+- Modify: `internal/qmsapi/db/user.go` (rename with `GORM` suffix)
+- Extend: the goqu subscription functions started in Task 12
+- Modify: `internal/qmsapi/db/subscriptions.go` (rename the converted functions)
+- Modify: `internal/qmsapi/controllers/users.go`, `internal/qmsapi/controllers/util.go`
 
 **Interfaces:**
-- Consumes: Task 10's plumbing, Task 13's plan queries.
-- Produces: `activeNow`, `overlapping`, `notExpiredAt`, `withSubscriptionDetails`, `SubscribeUser`, `SubscribeUserToDefaultPlan`, `GetActiveSubscription`, `HasActiveSubscription`, `GetSubscriptionDetails`, `ListSubscriptions`, `GetActiveSubscriptionDetails`, `DeactivateSubscriptions`, `UpsertQuota` with the `*gorm.DB` parameter replaced; `NewSubscriptionAdder` and `AddSubscription` taking the goqu transaction.
+- Consumes: Task 10's plumbing; `GetResourceTypeByName` (T11); `GetActiveSubscriptionDetails` (T12); `GetPlan` (T13).
+- Produces: goqu `GetUser`, `UserExists`, `HasActiveSubscription`, `GetActiveSubscription`, `GetSubscriptionDetails`, `UpsertQuota`, `DeactivateSubscriptions`, `SubscribeUserToPlan`, `SubscribeUserToDefaultPlan`, `ListSubscriptionsForUser`. Task 15 reuses several.
 
-The largest and highest-risk task. Gated by `apitest/qms_divergence_test.go` in full — nine tests encoding subscription semantics that were hard-won, including the unforced-upgrade rule, open-ended subscription handling, and per-item bulk failure reporting.
+The largest task. Six handlers plus `util.go`'s `UserExists` helper, and it
+reaches deepest into `subscriptions.go`.
+
+Transaction sites: `users.go:65`, `:139`, `:208`, `:305` use `s.transaction`;
+`users.go:413` bypasses it with a raw `s.GORMDB.Transaction(...)`. All five move
+to `s.goquTransaction`. `util.go:16` uses `s.GORMDB` directly with no transaction.
+
+**Preserve the write-on-read side effect.** `GetSubscriptionDetails` creates a
+user the service has never seen and subscribes them to the default plan,
+returning 200 rather than 404. Terrain depends on it — a user who has never
+touched QMS still gets a plan on first login.
+`apitest/testdata/user_plan_autocreated.json` pins it.
+
+**Preserve the absent `ORDER BY` on `GetAllUsers`** (`users.go:38`). Task 1
+goldened only the single-user case for exactly this reason.
+
+**`UpsertQuota` and `SubscribeUserToPlan` use GORM `clause` conflict handling.**
+The `ON CONFLICT` targets and actions must match, or repeated subscription
+changes insert instead of update.
+
+**The four not-found conventions.** `controllers/usages.go:27` declares its own
+`ErrUserNotFound`, a distinct value from `errors/errors.go:14`'s with an
+identical message string, and only the local one maps to 404. Do not introduce a
+producer for the top-level sentinel in this path; translate to
+`qmsdb.ErrNotFound` inside the query functions.
+
+Goldens pinning this controller: `add_user_created.json` and the other four
+`add_user_*`, `v1_user_added.json`, `user_plan_basic.json`, `user_plan_pro.json`,
+`user_plan_autocreated.json`, `user_subscriptions_basic.json`,
+`user_update_subscription_pro.json`, `quota_update_cpu_hours.json`,
+`quota_update_missing_quota.json`, `quota_update_unknown_resource_type.json`,
+`v1_users_single.json`.
+
+- [ ] **Step 1: Confirm the gate is green before changing anything**
+
+Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/`
+
+- [ ] **Step 2: Write the goqu query functions**
+
+- [ ] **Step 3: Rename the GORM originals and repoint remaining callers**
+
+- [ ] **Step 4: Convert all six handlers plus `util.go`, whole**
+
+- [ ] **Step 5: Run the gate**
+
+Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/ && golangci-lint run`
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "Convert the user handlers to goqu"
+```
+
+---
+
+### Task 15: Convert `controllers/subscriptions.go`
+
+**Files:**
+- Modify: `internal/qmsapi/db/subscriptions.go` (rename the remaining functions)
+- Extend: the goqu subscription file with whatever remains
+- Modify: `internal/qmsapi/controllers/subscriptions.go`
+
+**Interfaces:**
+- Consumes: everything Tasks 11-14 produced.
+- Produces: goqu `ListSubscriptions`, `ListOverlappingSubscriptionDetails`, and the `activeNow` / `overlapping` / `notExpiredAt` / `withSubscriptionDetails` scope helpers.
+
+The highest-risk semantics, gated by all nine tests in
+`apitest/qms_divergence_test.go` — the unforced-upgrade rule, open-ended
+subscription handling, per-item bulk failure reporting, and the
+overlapping-subscription deactivation.
 
 Three things to preserve exactly:
-- The `activeNow` / `notExpiredAt` / `overlapping` scopes are the single `activeAsOf` notion that a prior bug fix consolidated. Do not re-derive them independently per query; that is precisely the bug that was fixed.
-- `DeactivateSubscriptions` uses `gorm.Expr("effective_start_date")` in an `UpdateColumn` (`subscriptions.go:412`) — a column-to-column assignment, not a bound value. In goqu this is a `goqu.I("effective_start_date")`, not a literal.
-- `UpsertQuota` and `SubscribeUser` use GORM `clause` conflict handling; the `ON CONFLICT` targets and actions must match.
 
-- [ ] **Step 1: Confirm the gate passes before changing anything**
+- **The `activeNow` / `notExpiredAt` / `overlapping` scopes are one `activeAsOf`
+  notion** that a prior bug fix deliberately consolidated. Do not re-derive them
+  independently per query — that is precisely the bug that was fixed, where four
+  hand-copied predicates disagreed with a fifth inside `DeactivateSubscriptions`
+  and an open-ended subscription could never be closed.
+- **`DeactivateSubscriptions` uses `gorm.Expr("effective_start_date")` in an
+  `UpdateColumn`** (`subscriptions.go:412`) — a column-to-column assignment, not
+  a bound value. In goqu that is `goqu.I("effective_start_date")`. Passing it as
+  a literal writes the string.
+- **`SubscribeUser` uses GORM `clause` conflict handling.** Match the `ON CONFLICT`
+  target and action.
 
-Run: `go test ./apitest/ -run 'Subscription|Unforced|Overlapping|BulkSubscription|CurrentPlan|QuotaUpdate' -count=1 -v`
-Expected: PASS.
+Transaction sites: `subscriptions.go:232` and `:316` both bypass `s.transaction`
+with raw `s.GORMDB.Transaction(...)`. `NewSubscriptionAdder` (`:34`) and
+`AddSubscription` (`:81`) take a `*gorm.DB` and must take a `*goqu.TxDatabase`.
+`AddSubscription` takes the transaction it is handed and never opens its own —
+preserve that.
 
-- [ ] **Step 2: Rewrite the four scope helpers first, then the queries that compose them**
+Goldens: `subscriptions_bulk_create.json`, `subscriptions_list.json`,
+`subscriptions_list_empty.json`. Note `subscriptions_list_empty.json` is the one
+existing golden that exercises an **empty** list, so it is the one place the
+suite can catch the `[]`-to-`null` flip. Treat a diff there as proof the
+destination slice was not initialized.
 
-- [ ] **Step 3: Rewrite `DeactivateSubscriptions`, being explicit about the column-to-column assignment**
+- [ ] **Step 1: Confirm the gate is green before changing anything**
 
-- [ ] **Step 4: Rewrite `UpsertQuota` and `SubscribeUser`, preserving the conflict clauses**
+Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/`
 
-- [ ] **Step 5: Replace the inline GORM calls in `controllers/subscriptions.go`**
+- [ ] **Step 2: Convert the four scope helpers first, then the queries that compose them**
 
-- [ ] **Step 6: Run the divergence suite**
+- [ ] **Step 3: Convert `DeactivateSubscriptions`, being explicit about the column-to-column assignment**
+
+- [ ] **Step 4: Convert the remaining queries and the conflict clauses**
+
+- [ ] **Step 5: Convert both handlers and `SubscriptionAdder`, whole**
+
+- [ ] **Step 6: Run the divergence suite specifically**
 
 Run: `go test ./apitest/ -run 'Subscription|Unforced|Overlapping|BulkSubscription|CurrentPlan|QuotaUpdate' -count=1 -v`
 Expected: PASS, all nine divergence tests included.
 
-- [ ] **Step 7: Run the full suite and diff the goldens**
+- [ ] **Step 7: Run the gate**
 
-Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/`
-Expected: PASS, and an empty diff.
+Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/ && golangci-lint run`
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add internal/qmsapi/db/subscriptions.go internal/qmsapi/controllers/subscriptions.go
-git commit -m "Rewrite the subscription queries against goqu"
+git add -A
+git commit -m "Convert the subscription handlers to goqu"
 ```
 
 ---
@@ -1214,53 +1406,63 @@ git commit -m "Rewrite the subscription queries against goqu"
 
 ---
 
-### Task 15: Delete the GORM layer
+### Task 16: Delete the GORM layer
 
 **Files:**
 - Delete: `internal/qmsapi/db/gorm.go`
-- Modify: `internal/qmsapi/controllers/root.go` (drop the `GORMDB` field and the GORM `transaction` method)
-- Modify: `app/app.go:99-122` (`RegisterQMSAPI`)
+- Modify: `internal/qmsapi/db/{resource_types,user,usage,plan,subscriptions}.go` — delete every `*GORM` function
+- Modify: `internal/qmsapi/controllers/root.go` (drop `GORMDB` and the GORM `transaction` method)
+- Modify: `app/app.go` (`RegisterQMSAPI`), `main.go`, `apitest/harness_test.go`
 - Modify: `go.mod`, `go.sum`
 
-`RegisterQMSAPI` currently returns an error **only** because `InitGORMConnection` can fail. Once GORM is gone the error path disappears. `main.go:100` and `apitest/harness_test.go:130` both check that error, so both need updating. Keep `RegisterQMSAPI` separate from `New` regardless — `app/app.go:96-98` explains that `New` is also called without a database by tests that return before touching one.
+`RegisterQMSAPI` currently returns an error **only** because `InitGORMConnection`
+can fail. Once GORM is gone the error path disappears. `main.go:100` and
+`apitest/harness_test.go:130` both check that error, so both need updating. Keep
+`RegisterQMSAPI` separate from `New` regardless — `app/app.go:96-98` explains
+that `New` is also called without a database by tests that return before
+touching one.
 
-- [ ] **Step 1: Confirm no GORM references remain outside the files being deleted**
+Known dead already at the start of this task, from Task 11:
+`GetResourceTypeByIDGORM`, `UpdateResourceTypeGORM`, `SaveResourceTypeGORM`.
+
+- [ ] **Step 1: Confirm no GORM references remain outside what this task deletes**
 
 Run: `grep -rn 'gorm' --include='*.go' . | grep -v '_test.go'`
-Expected: hits only in `internal/qmsapi/db/gorm.go` and the `GORMDB` field and `transaction` method in `controllers/root.go`. Any other hit means a Phase 2 task was incomplete — go back and finish it.
+Expected: hits only in `internal/qmsapi/db/gorm.go`, the `*GORM` functions, and
+the `GORMDB` field and `transaction` method in `controllers/root.go`. Any other
+hit means an earlier task was incomplete — finish it rather than patching here.
 
-- [ ] **Step 2: Delete `gorm.go` and drop `GORMDB` and the GORM `transaction` method**
+- [ ] **Step 2: Delete `gorm.go` and every `*GORM` function**
 
 ```bash
 git rm internal/qmsapi/db/gorm.go
 ```
 
-- [ ] **Step 3: Simplify `RegisterQMSAPI` and its two callers**
+- [ ] **Step 3: Drop `GORMDB` and the GORM `transaction` method from `controllers/root.go`**
 
-Change the signature to `func (a *App) RegisterQMSAPI(usernameSuffix string)`, drop the `fmt.Errorf` wrapper, and update `main.go` and `apitest/harness_test.go` to call it without checking an error.
+- [ ] **Step 4: Simplify `RegisterQMSAPI` and its two callers**
 
-- [ ] **Step 4: Build and confirm the suite still passes**
+Change the signature to `func (a *App) RegisterQMSAPI(usernameSuffix string)`,
+drop the `fmt.Errorf` wrapper, and update `main.go` and `apitest/harness_test.go`
+to call it without checking an error.
+
+- [ ] **Step 5: Build and confirm the suite still passes**
 
 Run: `go build ./... && go test ./... -count=1`
-Expected: PASS.
 
-- [ ] **Step 5: Drop the GORM modules**
+- [ ] **Step 6: Drop the GORM modules**
 
 ```bash
 go mod tidy
 grep -c gorm go.mod
 ```
-Expected: `0`. Both `gorm.io/gorm` and `gorm.io/driver/postgres` are gone.
+Expected: `0`.
 
-- [ ] **Step 6: Verify the full gate one last time**
+- [ ] **Step 7: Verify the full gate one last time**
 
-Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/`
-Expected: PASS, and an empty diff. **This empty diff across the whole of Phases 2 and 3 is the deliverable.**
-
-- [ ] **Step 7: Lint**
-
-Run: `golangci-lint run`
-Expected: clean. Per `CLAUDE.md`, treat warnings as errors unless fixing one would cause a difficult breakage.
+Run: `go test ./... -count=1 && git diff --stat goqu-baseline -- apitest/testdata/ && golangci-lint run`
+Expected: PASS, empty diff, clean lint. **The empty diff across the whole of
+Phases 2 and 3 is the deliverable.**
 
 - [ ] **Step 8: Commit**
 
@@ -1274,7 +1476,9 @@ rewrite, so the endpoints behave exactly as they did before."
 
 - [ ] **Step 9: Report the findings**
 
-Summarize `docs/superpowers/findings-goqu-unification.md` for the user: each suspected bug reproduced rather than fixed, and what a follow-up branch would need to change. Do not fix them here.
+Summarize `docs/superpowers/findings-goqu-unification.md` for the user: each
+suspected bug reproduced rather than fixed, and what a follow-up branch would
+need to change. Do not fix them here.
 
 ---
 
