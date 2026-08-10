@@ -353,6 +353,30 @@ it actually returns. Recording it here, in the same terms as the
 task turned up consistent with each other rather than one being written down
 and the other only living in a report.
 
+**FIXED on `goqu-deferred-fixes`.** The scalar the handler had was the
+problem, so the fix gives it a row to read: `db.LoadUsageDetails`
+(`db/usages.go`) is a new single-row loader for a (resource type,
+subscription) pair, selecting the same columns and joining `resource_types`
+the same way `SubscriptionUsages` does — it is the usage-side counterpart of
+the `LoadQuotaDetails` that `addQuota` already used for exactly this purpose.
+`addUsage` (`app/usages.go`) calls it after `CalculateUsage` in place of the
+second `GetCurrentUsage`, and returns `stored.ToQMSUsage()`. A row that
+somehow isn't there afterwards is an error rather than a zero-valued
+response, matching `addQuota`'s "unable to load the quota after saving".
+
+Golden that moved: `apitest/testdata/goqu_usage_added.json` — `uuid`,
+`created_at`, `created_by`, `last_modified_at` and `last_modified_by` now
+carry the row's real values, the same ones the sibling
+`GET /users/{username}/usages` reports in `usages_after_set.json`. Note that
+`created_by`/`last_modified_by` read `qms` rather than the `de` that
+`UpsertUsage` writes: the audit columns are set by the `insert_username`
+triggers the migrations install, so they hold the database session user. That
+is a property of the stored row, not of this change — the read route has
+always reported the same thing.
+
+`GetCurrentUsage` keeps its remaining caller inside `CalculateUsage`, which
+needs the scalar and nothing else.
+
 ## `goquTransaction` vs `transaction`: a failed ROLLBACK discards the `txAbort` marker
 
 **Observed behavior:** the two transaction helpers in

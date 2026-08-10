@@ -4,10 +4,10 @@
     "map": {}
   },
   "usage": {
-    "created_at": null,
-    "created_by": "",
-    "last_modified_at": null,
-    "last_modified_by": "",
+    "created_at": "<timestamp>",
+    "created_by": "qms",
+    "last_modified_at": "<timestamp>",
+    "last_modified_by": "qms",
     "resource_type": {
       "consumable": true,
       "name": "cpu.hours",
@@ -16,6 +16,6 @@
     },
     "subscription_id": "<uuid>",
     "usage": 77,
-    "uuid": ""
+    "uuid": "<uuid>"
   }
 }

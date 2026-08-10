@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	t "github.com/cyverse-de/subscriptions/db/tables"
 	"github.com/doug-martin/goqu/v9"
 	"github.com/doug-martin/goqu/v9/exec"
 )
@@ -37,6 +38,50 @@ func (d *Database) GetCurrentUsage(ctx context.Context, resourceTypeID, subscrip
 	}
 
 	return usageValue, usageFound, nil
+}
+
+// LoadUsageDetails retrieves the full usage row for the given resource type and
+// subscription, including the identity and audit columns that GetCurrentUsage
+// leaves behind. Returns a nil usage when no row exists. Accepts a variable
+// number of QueryOptions, though only WithTX is currently supported.
+func (d *Database) LoadUsageDetails(
+	ctx context.Context,
+	resourceTypeID, subscriptionID string,
+	opts ...QueryOption,
+) (*Usage, error) {
+	_, db := d.querySettings(opts...)
+
+	query := db.From(t.Usages).
+		Select(
+			t.Usages.Col("id").As("id"),
+			t.Usages.Col("usage").As("usage"),
+			t.Usages.Col("subscription_id").As("subscription_id"),
+			t.Usages.Col("created_by").As("created_by"),
+			t.Usages.Col("created_at").As("created_at"),
+			t.Usages.Col("last_modified_by").As("last_modified_by"),
+			t.Usages.Col("last_modified_at").As("last_modified_at"),
+			t.RT.Col("id").As(goqu.C("resource_types.id")),
+			t.RT.Col("name").As(goqu.C("resource_types.name")),
+			t.RT.Col("unit").As(goqu.C("resource_types.unit")),
+			t.RT.Col("consumable").As(goqu.C("resource_types.consumable")),
+		).
+		Join(t.RT, goqu.On(goqu.I("usages.resource_type_id").Eq(goqu.I("resource_types.id")))).
+		Where(goqu.And(
+			goqu.I("usages.resource_type_id").Eq(resourceTypeID),
+			goqu.I("usages.subscription_id").Eq(subscriptionID),
+		))
+	d.LogSQL(query)
+
+	var usage Usage
+	found, err := query.Executor().ScanStructContext(ctx, &usage)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+
+	return &usage, nil
 }
 
 // UpsertUsage will insert or update a record usage in the database for the

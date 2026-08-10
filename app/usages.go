@@ -124,23 +124,17 @@ func (a *App) addUsage(ctx context.Context, request *qms.AddUsage) *qms.UsageRes
 			return err
 		}
 
-		// Get the usages.
-		u, _, err := d.GetCurrentUsage(ctx, resourceType.ID, subscription.ID, db.WithTX(tx))
+		// Load the stored usage so that the response carries the row's identity and audit columns rather than just the
+		// value CalculateUsage worked out.
+		stored, err := d.LoadUsageDetails(ctx, resourceType.ID, subscription.ID, db.WithTX(tx))
 		if err != nil {
 			return err
 		}
-
-		// Return the current usage.
-		response.Usage = &qms.Usage{
-			Usage:          u,
-			SubscriptionId: subscription.ID,
-			ResourceType: &qms.ResourceType{
-				Uuid:       resourceType.ID,
-				Name:       resourceType.Name,
-				Unit:       resourceType.Unit,
-				Consumable: resourceType.Consumable,
-			},
+		if stored == nil {
+			return errors.New("unable to load the usage after saving")
 		}
+
+		response.Usage = stored.ToQMSUsage()
 
 		return nil
 	})
