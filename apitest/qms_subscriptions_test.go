@@ -1,6 +1,7 @@
 package apitest
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -56,6 +57,86 @@ func TestUpdateSubscription(t *testing.T) {
 		got := do(t, http.MethodGet, "/v1/users/"+testUser+"/plan", "")
 		assertGolden(t, "user_plan_pro", got, http.StatusOK)
 	})
+}
+
+// A plan name that doesn't exist is bad input, so it has to stay a 400 naming
+// the plan rather than becoming the generic 500 a database failure produces.
+// The handler used to reach that decision by testing the returned plan for nil,
+// which is how the GORM lookup reported absence; the goqu lookup reports it as
+// an error instead, so the distinction lives in how that error is matched. This
+// is asserted in Go rather than goldened because a new testdata file would be
+// indistinguishable from a golden that changed.
+func TestUpdateSubscriptionUnknownPlan(t *testing.T) {
+	resetDB(t)
+	createUser(t, testUser)
+
+	got := do(t, http.MethodPut, "/v1/users/"+testUser+"/NoSuchPlan?paid=true&periods=1", "")
+	if got.status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", got.status, http.StatusBadRequest, got.body)
+	}
+
+	var decoded struct {
+		Error  string `json:"error"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(got.body, &decoded); err != nil {
+		t.Fatalf("response body is not valid JSON: %s; body: %s", err, got.body)
+	}
+
+	wantError := "plan name `NoSuchPlan` not found"
+	if decoded.Error != wantError {
+		t.Errorf("error = %q, want %q", decoded.Error, wantError)
+	}
+	if decoded.Status != "Bad Request" {
+		t.Errorf("status field = %q, want %q", decoded.Status, "Bad Request")
+	}
+}
+
+// An empty user listing and an empty subscription listing are both arrays, not
+// null. Neither can be goldened: every list golden in the suite is backed by
+// seeded reference data or by a fixture the test creates, so none of them is
+// empty, and a user with no subscriptions is routine rather than pathological.
+func TestEmptyUserListingsAreArrays(t *testing.T) {
+	resetDB(t)
+
+	t.Run("the user listing", func(t *testing.T) {
+		var decoded struct {
+			Result json.RawMessage `json:"result"`
+		}
+		decodeResponse(t, do(t, http.MethodGet, "/v1/users", ""), &decoded)
+		if string(decoded.Result) != "[]" {
+			t.Errorf("result = %s, want []", decoded.Result)
+		}
+	})
+
+	t.Run("the subscriptions of a user who has none", func(t *testing.T) {
+		var decoded struct {
+			Result struct {
+				Subscriptions json.RawMessage `json:"subscriptions"`
+				Total         int64           `json:"total"`
+			} `json:"result"`
+		}
+		decodeResponse(t, do(t, http.MethodGet, "/v1/users/nosuchuser/subscriptions", ""), &decoded)
+		if string(decoded.Result.Subscriptions) != "[]" {
+			t.Errorf("subscriptions = %s, want []", decoded.Result.Subscriptions)
+		}
+		if decoded.Result.Total != 0 {
+			t.Errorf("total = %d, want 0", decoded.Result.Total)
+		}
+	})
+}
+
+// decodeResponse unmarshals a successful response body into dest, failing the
+// test if the request did not succeed or the body is not the expected shape.
+func decodeResponse(t *testing.T, got response, dest any) {
+	t.Helper()
+
+	if got.status != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", got.status, http.StatusOK, got.body)
+	}
+	if err := json.Unmarshal(got.body, dest); err != nil {
+		t.Fatalf("unable to decode the response: %s; body: %s", err, got.body)
+	}
 }
 
 // POST /v1/users/{username}/plan/{resource-type}/quota is the admin quota

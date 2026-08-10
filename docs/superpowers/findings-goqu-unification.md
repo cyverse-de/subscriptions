@@ -999,3 +999,100 @@ struct, which is the only effect the statement had.
 that now open a transaction** (see the section above on the database-down 500
 body). Both ran against `s.GORMDB` with no transaction; both now use
 `s.goquTransaction`, because the goqu query functions take a `*goqu.TxDatabase`.
+
+## Task 14: the `plan == nil` landmine, demonstrated rather than assumed
+
+Task 12 predicted this and Task 14 walked it. `controllers/users.go`'s
+`UpdateSubscription` decided "no such plan" by testing the returned plan for
+`nil`, which is how the GORM `GetPlan` reported absence. The goqu `GetPlan`
+returns an error matching `ErrNotFound`, so the moment the call is repointed the
+`plan == nil` branch becomes unreachable, the error falls through to the generic
+handler, and `PUT /v1/users/{username}/NoSuchPlan` answers **500 with
+`unable to look up plan name 'NoSuchPlan': record not found`** instead of **400
+with ``plan name `NoSuchPlan` not found``**.
+
+**Nothing in the golden set covers it.** `apitest/qms_subscriptions_test.go`
+exercised only the `Pro` success path; `add_user_unknown_plan.json` is the goqu
+`PUT /users` route and `v1_plan_no_name.json` is `POST /v1/plans`, so neither
+touches this handler. With the check left as-is and every call repointed, the
+whole suite passed and `git diff goqu-baseline -- apitest/testdata/` was still
+empty while the route was broken. `TestUpdateSubscriptionUnknownPlan` was
+written first, confirmed passing against the unconverted handler, then observed
+failing at 500, then made to pass again by the `errors.Is(err,
+qmsdb.ErrNotFound)` rewrite — a real red-green cycle rather than a description
+of the new code. It also passes unchanged against the `goqu-baseline` tag.
+
+**The same shape occurs twice more in this file, and only one of them is
+pinned.** `UpdateCurrentSubscriptionQuota`'s `resourceType == nil` check is the
+identical pattern against `GetResourceTypeByName`, and it *is* covered
+(`quota_update_unknown_resource_type.json`), so the gate would have caught it.
+The rule for Task 15: **every `x == nil` test on a converted lookup is a
+not-found branch in disguise.** Grep for `== nil` in the handler before
+repointing, and assume no golden covers it until one is named.
+
+### `ListSubscriptionsForUser` picks up a quota-default tiebreak it did not have
+
+GORM's `ListSubscriptionsForUser` preloaded `Plan.PlanQuotaDefaults` with
+`ORDER BY effective_date asc` and nothing else, while `withSubscriptionDetails`
+— used by every other subscription read — joined `resource_types` and sorted by
+`plan_quota_defaults.effective_date asc, resource_types.name asc`. Every seeded
+plan quota default carries the same `effective_date` (`'2022-01-01'`, set by
+`migrations/000014_subscription_rate_changes.up.sql:38`), so the listing's order
+was a tie Postgres broke however it liked.
+
+The goqu version loads a subscription's associations through the single
+`loadSubscriptionDetails`/`loadPlanDetails` path, which carries the name
+tiebreak. The result is one of the orders the old query was already free to
+return — and the one `user_subscriptions_basic.json` happens to record — but it
+is now deterministic where it used to be arbitrary. Writing a second loader
+without the tiebreak was the alternative and was rejected: it would have made
+the golden flaky to no purpose. Deliberate, and narrower than it looks, but not
+a pure transcription.
+
+### `Server.transaction` is gone; `txAbort` and `txError` are not
+
+`users.go` held the last four `s.transaction` call sites, so converting it left
+the GORM helper unused and `golangci-lint`'s `unused` check flagged it. It was
+deleted rather than suppressed. The section above comparing the two helpers'
+rollback semantics is now history rather than live guidance: the only GORM
+transactions left are the three raw `s.GORMDB.Transaction(...)` calls in
+`controllers/subscriptions.go` (`:232`, `:316`, plus `NewSubscriptionAdder` at
+`:223`), and none of them calls `txError`, so nothing depends on `txAbort` being
+unwrapped outside `goquTransaction`. Task 15 converts those three and removes
+`Server.GORMDB` with them.
+
+### The other three conversions, and what each one preserves
+
+- **`HasActiveSubscription`** asks the database for `count(*) > 0` where the
+  GORM version counted rows and compared in Go. Same answer, and absence stays a
+  successful `false` rather than becoming `ErrNotFound`: the caller reports it in
+  a 200 response body (`SubscriptionResponseFromSubscription`'s `newSubscription`
+  flag), not as a failure.
+- **`UpsertQuota`** keeps GORM's exact conflict handling —
+  `ON CONFLICT (subscription_id, resource_type_id) DO UPDATE SET
+  "quota"="excluded"."quota"`, the unique index from
+  `migrations/000003_quotas.up.sql:25`. Only the quota value is reassigned,
+  matching `clause.AssignmentColumns([]string{"quota"})`; the two key columns are
+  what the row conflicted on. Without the target, a second quota override for the
+  same subscription and resource type would insert a duplicate instead of
+  replacing the limit.
+- **`DeactivateSubscriptions`** is three `UPDATE`s whose predicates were
+  transcribed from the captured GORM SQL rather than inferred, including the
+  third one's `SET effective_end_date = effective_start_date`, which is a column
+  reference and not a value.
+
+All three, plus the listing, were verified by capturing both statement lists —
+`logger.Default.LogMode(logger.Info)` on `InitGORMConnection` and
+`goquDB.Logger(...)` in `db.New`, both reverted before committing — and diffing
+them for the four handlers the goldens cover.
+
+### `GET /v1/users/{username}/subscriptions` reports a database failure as 400
+
+`ListUserSubscriptions` maps every error from the listing to
+`http.StatusBadRequest`, so a dead connection is reported to the caller as bad
+input. This predates the conversion — the handler drove its own
+`s.GORMDB.Transaction` and passed whatever came out to `model.Error(ctx,
+err.Error(), http.StatusBadRequest)` — and the goqu version keeps it, including
+the `Begin()` failure now folded into the same branch. Recorded because it is
+the one handler in this file whose error mapping is visibly wrong and no golden
+reaches it; repairing it belongs outside this branch.

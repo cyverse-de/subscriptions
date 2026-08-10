@@ -154,7 +154,7 @@ func (sa *SubscriptionAdder) AddSubscription(tx *gorm.DB, req model.Subscription
 	}
 
 	// Ensure that no two subscriptions will be active at the same time..
-	err = db.DeactivateSubscriptions(sa.cfg.Ctx, tx, *user.ID, startDate, endDate)
+	err = db.DeactivateSubscriptionsGORM(sa.cfg.Ctx, tx, *user.ID, startDate, endDate)
 	if err != nil {
 		log.Error(err)
 		return sa.subscriptionError(*username, err.Error())

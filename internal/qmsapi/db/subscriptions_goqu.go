@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	t "github.com/cyverse-de/subscriptions/db/tables"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
@@ -39,6 +40,15 @@ func activeNowExpression() goqu.Expression {
 			t.Subscriptions.Col("effective_end_date").IsNull(),
 			t.Subscriptions.Col("effective_end_date").Gte(goqu.L("CURRENT_TIMESTAMP")),
 		),
+	)
+}
+
+// notExpiredAtExpression restricts a subscription query to the subscriptions that have not ended as of the given cutoff.
+// As with activeNowExpression, a subscription with no effective end date has not ended.
+func notExpiredAtExpression(cutoff time.Time) goqu.Expression {
+	return goqu.Or(
+		t.Subscriptions.Col("effective_end_date").IsNull(),
+		t.Subscriptions.Col("effective_end_date").Gte(cutoff),
 	)
 }
 
@@ -206,6 +216,25 @@ func GetActiveSubscription(ctx context.Context, tx *goqu.TxDatabase, username st
 	return &subscription, nil
 }
 
+// HasActiveSubscription determines whether or not the user currently has an active user plan. An absent subscription is
+// not an error here: the caller reports it as part of a successful response rather than as a failure.
+func HasActiveSubscription(ctx context.Context, tx *goqu.TxDatabase, username string) (bool, error) {
+	wrapMsg := "unable to determine whether the user has an active user plan"
+
+	var hasSubscription bool
+	_, err := tx.From(t.Subscriptions).
+		Select(goqu.L("count(*) > 0")).
+		Join(t.Users, goqu.On(t.Subscriptions.Col("user_id").Eq(t.Users.Col("id")))).
+		Where(t.Users.Col("username").Eq(username), activeNowExpression()).
+		Executor().
+		ScanValContext(ctx, &hasSubscription)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	return hasSubscription, nil
+}
+
 // GetSubscriptionDetails loads the details for the user plan with the given ID from the database. It returns an error
 // matching ErrNotFound when no subscription has that identifier.
 func GetSubscriptionDetails(ctx context.Context, tx *goqu.TxDatabase, subscriptionID string) (*model.Subscription, error) {
@@ -351,4 +380,147 @@ func GetActiveSubscriptionDetails(ctx context.Context, tx *goqu.TxDatabase, user
 	}
 
 	return GetSubscriptionDetails(ctx, tx, *subscription.ID)
+}
+
+// ListSubscriptionsForUser lists subscriptions for a single user, along with the total number of them, which is the same
+// number unless the listing is paginated. Expired subscriptions are omitted unless includeExpired is set, where expiry
+// is reckoned against the given cutoff rather than the current time.
+func ListSubscriptionsForUser(
+	ctx context.Context, tx *goqu.TxDatabase, username string, includeExpired bool, cutoff time.Time,
+) ([]*model.Subscription, int64, error) {
+	wrapMsg := fmt.Sprintf("unable to list the subscriptions for user '%s'", username)
+
+	conditions := []goqu.Expression{t.Users.Col("username").Eq(username)}
+	if !includeExpired {
+		conditions = append(conditions, notExpiredAtExpression(cutoff))
+	}
+
+	var count int64
+	_, err := tx.From(t.Subscriptions).
+		Select(goqu.COUNT(goqu.Star())).
+		Join(t.Users, goqu.On(t.Subscriptions.Col("user_id").Eq(t.Users.Col("id")))).
+		Where(conditions...).
+		Executor().
+		ScanValContext(ctx, &count)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	// Initialized rather than declared nil so that a user with no subscriptions marshals as [] and not null: goqu only
+	// touches the destination once per row, where GORM's Find replaced it with an empty slice before reading any.
+	subscriptions := []*model.Subscription{}
+	err = tx.From(t.Subscriptions).
+		Select(subscriptionColumns...).
+		Join(t.Users, goqu.On(t.Subscriptions.Col("user_id").Eq(t.Users.Col("id")))).
+		Where(conditions...).
+		Order(
+			t.Subscriptions.Col("effective_start_date").Asc(),
+			t.Subscriptions.Col("effective_end_date").Asc(),
+		).
+		Executor().
+		ScanStructsContext(ctx, &subscriptions)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	for _, subscription := range subscriptions {
+		if err = loadSubscriptionDetails(ctx, tx, subscription); err != nil {
+			return nil, 0, fmt.Errorf("%s: %w", wrapMsg, err)
+		}
+	}
+
+	return subscriptions, count, nil
+}
+
+// DeactivateSubscriptions marks subscriptions for a user as expired. This operation is used when a user subscribes to a
+// new plan. Subscriptions with no effective end date are treated as running indefinitely, matching activeNowExpression;
+// closing them here is what keeps a new subscription from running alongside an open-ended one.
+func DeactivateSubscriptions(
+	ctx context.Context, tx *goqu.TxDatabase, userID string, startDate, endDate time.Time,
+) error {
+	wrapMsg := "unable to deactivate active plans for user"
+
+	// Subscriptions that should be marked as inactive as of the start date.
+	_, err := tx.Update(t.Subscriptions).
+		Set(goqu.Record{"effective_end_date": startDate}).
+		Where(
+			goqu.C("user_id").Eq(userID),
+			goqu.C("effective_start_date").Lte(startDate),
+			goqu.Or(
+				goqu.C("effective_end_date").IsNull(),
+				goqu.C("effective_end_date").Gt(startDate),
+			),
+		).
+		Executor().
+		ExecContext(ctx)
+	if err != nil {
+		return fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	// Subscriptions that should become effective as of the end date. The upper bound on the start date keeps
+	// subscriptions scheduled entirely after the new window from being dragged backwards into it.
+	_, err = tx.Update(t.Subscriptions).
+		Set(goqu.Record{"effective_start_date": endDate}).
+		Where(
+			goqu.C("user_id").Eq(userID),
+			goqu.C("effective_start_date").Gte(startDate),
+			goqu.C("effective_start_date").Lt(endDate),
+			goqu.Or(
+				goqu.C("effective_end_date").IsNull(),
+				goqu.C("effective_end_date").Gt(endDate),
+			),
+		).
+		Executor().
+		ExecContext(ctx)
+	if err != nil {
+		return fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	// Subscriptions that should never become effective.
+	_, err = tx.Update(t.Subscriptions).
+		Set(goqu.Record{"effective_end_date": goqu.C("effective_start_date")}).
+		Where(
+			goqu.C("user_id").Eq(userID),
+			goqu.C("effective_start_date").Gte(startDate),
+			goqu.C("effective_end_date").Lte(endDate),
+		).
+		Executor().
+		ExecContext(ctx)
+	if err != nil {
+		return fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	return nil
+}
+
+// UpsertQuota updates a quota if a corresponding quota exists in the database. If a corresponding quota does not exist,
+// a new quota will be inserted.
+func UpsertQuota(ctx context.Context, tx *goqu.TxDatabase, quota *model.Quota) error {
+	wrapMsg := "unable to insert or update the quota"
+
+	// The conflict target is the unique index on (resource_type_id, subscription_id): without it a repeated quota update
+	// for the same subscription and resource type would insert a second row instead of replacing the limit. Only the
+	// quota value is reassigned, matching the clause this replaces; the other two columns are what the row conflicted on.
+	var id string
+	found, err := tx.Insert(t.Quotas).
+		Rows(goqu.Record{
+			"quota":            quota.Quota,
+			"subscription_id":  *quota.SubscriptionID,
+			"resource_type_id": *quota.ResourceTypeID,
+		}).
+		OnConflict(goqu.DoUpdate("subscription_id,resource_type_id", goqu.Record{
+			"quota": goqu.I("excluded.quota"),
+		})).
+		Returning("id").
+		Executor().
+		ScanValContext(ctx, &id)
+	if err != nil {
+		return fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+	if !found {
+		return fmt.Errorf("%s: the upsert returned no row", wrapMsg)
+	}
+	quota.ID = &id
+
+	return nil
 }

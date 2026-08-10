@@ -1,18 +1,18 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"gorm.io/gorm"
-
-	"github.com/cyverse-de/subscriptions/internal/qmsapi/db"
+	qmsdb "github.com/cyverse-de/subscriptions/internal/qmsapi/db"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/httpmodel"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model/timestamp"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/query"
+	"github.com/doug-martin/goqu/v9"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 )
@@ -34,12 +34,15 @@ const (
 
 // GetAllUsers lists the users that are currently defined in the database.
 func (s Server) GetAllUsers(ctx echo.Context) error {
-	var data []model.User
-	err := s.GORMDB.Find(&data).Error
-	if err != nil {
-		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
-	}
-	return ctx.JSON(http.StatusOK, model.SuccessResponse(data, http.StatusOK))
+	context := ctx.Request().Context()
+
+	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+		data, err := qmsdb.ListUsers(context, tx)
+		if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
+		}
+		return ctx.JSON(http.StatusOK, model.SuccessResponse(data, http.StatusOK))
+	})
 }
 
 type Result struct {
@@ -62,11 +65,11 @@ func (s Server) GetSubscriptionDetails(ctx echo.Context) error {
 	log = log.WithFields(logrus.Fields{"user": username})
 
 	// Start a transaction.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
 		var err error
 
 		// Look up or insert the user.
-		user, err := db.GetUserGORM(context, tx, username)
+		user, err := qmsdb.GetUser(context, tx, username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -74,7 +77,7 @@ func (s Server) GetSubscriptionDetails(ctx echo.Context) error {
 		log.Debugf("found user %s in db", user.Username)
 
 		// Look up or create the user plan.
-		subscription, err := db.GetActiveSubscriptionDetailsGORM(context, tx, user.Username)
+		subscription, err := qmsdb.GetActiveSubscriptionDetails(context, tx, user.Username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -136,28 +139,28 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 	}
 
 	// Start a transaction.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
 		// Look up the resource type.
-		resourceType, err := db.GetResourceTypeByNameGORM(ctx, tx, resourceTypeName)
-		if err != nil {
-			log.Error(err)
-			return txError(c, err.Error(), http.StatusInternalServerError)
-		}
-		if resourceType == nil {
+		resourceType, err := qmsdb.GetResourceTypeByName(ctx, tx, resourceTypeName)
+		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("resource type '%s' not found", resourceTypeName)
 			log.Error(msg)
 			return txError(c, msg, http.StatusBadRequest)
 		}
+		if err != nil {
+			log.Error(err)
+			return txError(c, err.Error(), http.StatusInternalServerError)
+		}
 
 		// Determine whether or not the user has an active subscription.
-		hasActiveSubscription, err := db.HasActiveSubscription(ctx, tx, username)
+		hasActiveSubscription, err := qmsdb.HasActiveSubscription(ctx, tx, username)
 		if err != nil {
 			log.Error(err)
 			return txError(c, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Load the user's current subscription, creating a new subscription if necessary.
-		subcription, err := db.GetActiveSubscriptionGORM(ctx, tx, username)
+		subcription, err := qmsdb.GetActiveSubscription(ctx, tx, username)
 		if err != nil {
 			log.Error(err)
 			return txError(c, err.Error(), http.StatusInternalServerError)
@@ -169,14 +172,14 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 			Quota:          body.Quota,
 			ResourceTypeID: resourceType.ID,
 		}
-		err = db.UpsertQuota(ctx, tx, quota)
+		err = qmsdb.UpsertQuota(ctx, tx, quota)
 		if err != nil {
 			log.Error(err)
 			return txError(c, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Load the subscription details.
-		details, err := db.GetSubscriptionDetailsGORM(ctx, tx, *subcription.ID)
+		details, err := qmsdb.GetSubscriptionDetails(ctx, tx, *subcription.ID)
 		if err != nil {
 			log.Error(err)
 			return txError(c, err.Error(), http.StatusInternalServerError)
@@ -205,12 +208,12 @@ func (s Server) AddUser(ctx echo.Context) error {
 	log = log.WithFields(logrus.Fields{"user": username})
 
 	// Start a transaction.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
 		var err error
 
 		// Either add the user to the database or look up the existing user
 		// information.
-		user, err := db.GetUserGORM(context, tx, username)
+		user, err := qmsdb.GetUser(context, tx, username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -219,7 +222,7 @@ func (s Server) AddUser(ctx echo.Context) error {
 
 		// GetActiveSubscription will automatically subscribe the user to the basic
 		// plan if not subscribed already.
-		_, err = db.GetActiveSubscriptionGORM(context, tx, user.Username)
+		_, err = qmsdb.GetActiveSubscription(context, tx, user.Username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -302,29 +305,29 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 	})
 
 	// Start a transaction.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
 		var err error
 
 		// Either add the user to the database or look up the existing user information.
-		user, err := db.GetUserGORM(context, tx, username)
+		user, err := qmsdb.GetUser(context, tx, username)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		log.Debug("found user in the database")
 
 		// Verify that a plan with the given name exists.
-		plan, err := db.GetPlanGORM(context, tx, planName)
-		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
-		}
-		if plan == nil {
+		plan, err := qmsdb.GetPlan(context, tx, planName)
+		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("plan name `%s` not found", planName)
 			return txError(ctx, msg, http.StatusBadRequest)
+		}
+		if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		log.Debug("verified that plan exists in database")
 
 		// Deactivate conflicting subscriptions for the user.
-		err = db.DeactivateSubscriptions(context, tx, *user.ID, startDate, endDate)
+		err = qmsdb.DeactivateSubscriptions(context, tx, *user.ID, startDate, endDate)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -341,14 +344,14 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 		}
 
 		// Subscribe the user to the plan.
-		subscription, err := db.SubscribeUserToPlanGORM(context, tx, user, plan, opts)
+		subscription, err := qmsdb.SubscribeUserToPlan(context, tx, user, plan, opts)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		log.Debug("finished adding the new subscription")
 
 		// Load the subscription details.
-		details, err := db.GetSubscriptionDetailsGORM(context, tx, *subscription.ID)
+		details, err := qmsdb.GetSubscriptionDetails(context, tx, *subscription.ID)
 		if err != nil {
 			log.Error(err)
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
@@ -410,8 +413,8 @@ func (s Server) ListUserSubscriptions(ctx echo.Context) error {
 	// Obtain the listing.
 	var subscriptions []*model.Subscription
 	var count int64
-	err = s.GORMDB.Transaction(func(tx *gorm.DB) error {
-		subscriptions, count, err = db.ListSubscriptionsForUser(context, tx, username, includeExpired, cutoff)
+	err = s.goquTransaction(func(tx *goqu.TxDatabase) error {
+		subscriptions, count, err = qmsdb.ListSubscriptionsForUser(context, tx, username, includeExpired, cutoff)
 		return err
 	})
 	if err != nil {

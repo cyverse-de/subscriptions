@@ -205,8 +205,8 @@ func GetActiveSubscriptionGORM(ctx context.Context, db *gorm.DB, username string
 	return &subscription, nil
 }
 
-// HasActiveSubscription determines whether or not the user currently has an active user plan.
-func HasActiveSubscription(ctx context.Context, db *gorm.DB, username string) (bool, error) {
+// HasActiveSubscriptionGORM determines whether or not the user currently has an active user plan.
+func HasActiveSubscriptionGORM(ctx context.Context, db *gorm.DB, username string) (bool, error) {
 	wrapMsg := "unable to determine whether the user has an active user plan"
 
 	// Determine whether or not the user has an active subscription.
@@ -306,8 +306,8 @@ func ListSubscriptions(
 	return subscriptions, count, err
 }
 
-// ListSubscriptionsForUser lists subscriptions for a single user.
-func ListSubscriptionsForUser(
+// ListSubscriptionsForUserGORM lists subscriptions for a single user.
+func ListSubscriptionsForUserGORM(
 	ctx context.Context, db *gorm.DB, username string, includeExpired bool, cutoff time.Time,
 ) ([]*model.Subscription, int64, error) {
 	var subscriptions []*model.Subscription
@@ -371,10 +371,10 @@ func GetActiveSubscriptionDetailsGORM(ctx context.Context, db *gorm.DB, username
 	return GetSubscriptionDetailsGORM(ctx, db, *subscription.ID)
 }
 
-// DeactivateSubscriptions marks subscriptions for a user as expired. This operation is used when a user subscribes to a
-// new plan. Subscriptions with no effective end date are treated as running indefinitely, matching activeNow; closing
-// them here is what keeps a new subscription from running alongside an open-ended one.
-func DeactivateSubscriptions(ctx context.Context, db *gorm.DB, userID string, startDate, endDate time.Time) error {
+// DeactivateSubscriptionsGORM marks subscriptions for a user as expired. This operation is used when a user subscribes
+// to a new plan. Subscriptions with no effective end date are treated as running indefinitely, matching activeNow;
+// closing them here is what keeps a new subscription from running alongside an open-ended one.
+func DeactivateSubscriptionsGORM(ctx context.Context, db *gorm.DB, userID string, startDate, endDate time.Time) error {
 	wrapMsg := "unable to deactivate active plans for user"
 
 	// Subscriptions that should be marked as inactive as of the start date.
@@ -418,9 +418,9 @@ func DeactivateSubscriptions(ctx context.Context, db *gorm.DB, userID string, st
 	return nil
 }
 
-// UpsertQuota updates a quota if a corresponding quota exists in the database. If a corresponding quota does not
+// UpsertQuotaGORM updates a quota if a corresponding quota exists in the database. If a corresponding quota does not
 // exist, a new quota will be inserted.
-func UpsertQuota(ctx context.Context, db *gorm.DB, quota *model.Quota) error {
+func UpsertQuotaGORM(ctx context.Context, db *gorm.DB, quota *model.Quota) error {
 	wrapMsg := "unable to insert or update the quota"
 
 	// Either insert or update the quota.

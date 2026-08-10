@@ -49,22 +49,9 @@ type Server struct {
 	UsernameSuffix string
 }
 
-// transaction runs fn inside a database transaction, unwrapping the response written by any txError call within it so
-// that echo sees the handler's real return value.
-func (s Server) transaction(fn func(tx *gorm.DB) error) error {
-	err := s.GORMDB.Transaction(fn)
-
-	var abort txAbort
-	if errors.As(err, &abort) {
-		return abort.response
-	}
-
-	return err
-}
-
 // goquTransaction runs fn inside a database transaction, unwrapping the response written by any txError call within it
-// so that echo sees the handler's real return value. It is the goqu counterpart of transaction and shares txAbort, so a
-// handler converted from one to the other keeps its rollback semantics.
+// so that echo sees the handler's real return value. It replaces the GORM helper that every /v1 handler used before the
+// rewrite; the handlers that still drive a GORM transaction do so directly and write no response from inside it.
 func (s Server) goquTransaction(fn func(tx *goqu.TxDatabase) error) error {
 	tx, err := s.GoquDB.Begin()
 	if err != nil {

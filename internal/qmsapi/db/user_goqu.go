@@ -36,6 +36,25 @@ func GetUser(ctx context.Context, tx *goqu.TxDatabase, username string) (*model.
 	return &model.User{ID: &id, Username: username}, nil
 }
 
+// ListUsers lists every user registered in the database.
+func ListUsers(ctx context.Context, tx *goqu.TxDatabase) ([]model.User, error) {
+	wrapMsg := "unable to list the users"
+
+	// Initialized rather than declared nil so that an empty result marshals as [] and not null: goqu only touches the
+	// destination once per row, where GORM's Find replaced it with an empty slice before reading any.
+	// Deliberately unordered: the query this replaces had no ORDER BY, and adding one would reorder the response.
+	users := []model.User{}
+	err := tx.From(t.Users).
+		Select(userColumns...).
+		Executor().
+		ScanStructsContext(ctx, &users)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	return users, nil
+}
+
 // usersByID looks up the given users and indexes them by identifier. It backs the association loads that GORM
 // performed with Preload, which issued exactly this query and matched the rows up in Go.
 func usersByID(ctx context.Context, tx *goqu.TxDatabase, ids []string) (map[string]*model.User, error) {
