@@ -199,10 +199,12 @@ summarized>`, so the column can only hold that ID. Goldens that moved:
 `apitest/testdata/summary_unknown_user.json` (two quotas; the auto-created
 subscription has no usage rows yet).
 
-`ToQMSQuota`'s other caller is `addQuota` (`app/quotas.go`), the `PUT
-/quotas` handler, whose golden did not move — that route still fails with the
-500 recorded in the next section, so its response carries `"quota": null` and
-has no field to populate. `ToQMSUsage`'s only caller is `ToQMSSubscription`,
+`ToQMSQuota`'s other caller is `addQuota` (`app/quotas.go`), the `PUT /quotas`
+handler, whose golden did not move for this change — that route still failed
+with the 500 recorded in the next section at the time, so its response carried
+`"quota": null` and had no field to populate. The fix recorded in that section
+makes the route succeed, and `goqu_quota_added.json` now shows the populated
+`subscription_id` this change is about. `ToQMSUsage`'s only caller is `ToQMSSubscription`,
 whose only caller is `GET /summary/{user}`. `GET /users/{username}/usages`
 builds its own `qms.Usage` literals and already set `SubscriptionId`, so it
 is unaffected.
@@ -246,6 +248,26 @@ of the six goqu routes being kept without a verified caller (spec §Scope);
 this task exists specifically to surface exactly this kind of latent bug
 before a caller shows up and hits it. Not a regression to fix on this
 branch — reproduce it, don't repair it.
+
+**FIXED on `goqu-deferred-fixes`.** `addQuota` (`app/quotas.go`) now resolves
+the resource type through `d.LookupResoureType` — the same call `addPlan`
+makes, spelled with the same existing typo — before it upserts, and passes the
+resolved `resourceType.ID` to both `UpsertQuota` and `LoadQuotaDetails` in
+place of the raw `request.Quota.ResourceType.Uuid`. The uuid path is
+unchanged: `LookupResoureType` prefers `ID` and falls back to the name only
+when `ID` is empty, so a request that supplies `resource_type.uuid` still
+takes exactly the query it took before. A request that supplies neither now
+gets `either the resource type ID or name must be specified` rather than the
+Postgres uuid-syntax error.
+
+Golden that moved: `apitest/testdata/goqu_quota_added.json`, which went from
+the 500 error envelope with `"quota": null` to the stored quota row — value
+`500`, the seeded `cpu.hours` resource type, the subscription ID, and the row's
+`uuid` and audit columns. `TestGoquAddQuota`'s `wantStatus` changed from
+`http.StatusInternalServerError` to `http.StatusOK` with it. As in
+`goqu_usage_added.json`, `created_by`/`last_modified_by` read `qms` rather than
+the `de` the upsert writes, because the `insert_username` triggers the
+migrations install overwrite them with the database session user.
 
 ## `GET /plans/{plan_id}` (goqu route): `plan_rates` and `effective_date` are silently dropped
 
@@ -590,7 +612,7 @@ duplicates needs.
 | `goqu_plans_list.json` (`GET /plans`) | `plans_list.json` (`GET /v1/plans`) | Same data, different envelope and field names. `/v1` wraps in `{"status": "OK", "result": [...]}`; goqu wraps in `{"header": {"map": {}}, "error": null, "plans": [...]}`. Within each plan, `/v1` uses `"id"` where goqu uses `"uuid"` (plan, quota default, plan rate, and resource type all rename this way). Otherwise the same fields, same values, same nesting. |
 | `goqu_plan_get.json` (`GET /plans/{id}`) | `plans_get_basic.json` (`GET /v1/plans/{id}`) | Same envelope/naming differences as above, **plus a real content gap**: goqu's `plan_rates` is `null` and every `plan_quota_defaults[].effective_date` is `null`, while `/v1`'s response has both fully populated. This is the `getPlan` handler bug recorded above — both routes read the same underlying data via `db.GetPlanByID`, but the goqu HTTP handler drops fields the `/v1` handler keeps. |
 | `goqu_plan_added.json` (`PUT /plans`) | `v1_plan_created.json` (`POST /v1/plans`) | Very different shape, not just renamed fields. `/v1`'s create returns almost nothing on success — `{"status": "OK", "result": "Success"}`, no plan data at all. goqu's `PUT /plans` returns the full created plan (`uuid`, `name`, `description`, empty `plan_quota_defaults`/`plan_rates` arrays for this request). A caller wanting the new plan's ID back would need the goqu route; `/v1` doesn't give it one. |
-| `goqu_quota_added.json` (`PUT /quotas`) | `quota_update_cpu_hours.json` (`POST /v1/users/{u}/plan/{rt}/quota`) | Not a like-for-like comparison as recorded, since the goqu side is the 500 error body above — but structurally, even on a success path these two return fundamentally different things. `/v1`'s quota-update endpoint returns the **entire subscription** (plan, plan_rate, all quotas, all usages, user), nested three levels deep. goqu's route is built to return just the single updated `quota` object. Collapsing these isn't a rename exercise — it changes what the caller gets back, from a subscription snapshot to a single record or vice versa. |
+| `goqu_quota_added.json` (`PUT /quotas`) | `quota_update_cpu_hours.json` (`POST /v1/users/{u}/plan/{rt}/quota`) | Recorded when the goqu side was the 500 error body above; it now returns the stored quota, and the two still return fundamentally different things. `/v1`'s quota-update endpoint returns the **entire subscription** (plan, plan_rate, all quotas, all usages, user), nested three levels deep. goqu's route is built to return just the single updated `quota` object. Collapsing these isn't a rename exercise — it changes what the caller gets back, from a subscription snapshot to a single record or vice versa. |
 | `goqu_usage_added.json` (`PUT /users/{u}/usages`) | `usage_add_set.json` (`POST /v1/usages`) | Very different shape. `/v1`'s usage-update endpoint returns a bare string message — `{"status": "OK", "result": "successfully updated the usage for: testuser"}` — no usage data at all. goqu's route returns a `usage` object (incomplete, per the finding above, but structured — `usage` value, `resource_type`, `subscription_id`). A caller wanting the resulting usage value back programmatically would need the goqu route; `/v1` only gives a human-readable message. |
 | `goqu_user_updates.json` (`GET /users/{u}/updates`) | `v1_usage_updates_single.json` (`GET /v1/usages/{u}/updates`) | Same data, different shape beyond the envelope. `/v1` uses `"resource_types"` (plural) as the key for the nested resource type object; goqu uses `"resource_type"` (singular). `/v1`'s `metadata` is `"{}"` (a JSON object literal as a string); goqu's is `""` (empty string) — a different default representation of "no metadata," not just a naming difference. Field-for-field naming otherwise lines up (`id`/`uuid`, `user`, `operation`, `value`, `value_type`, `effective_date`). |
 

@@ -54,7 +54,7 @@ func TestGoquAddQuota(t *testing.T) {
 	subscriptionID := subscriptionIDFor(t, trimmedUser)
 	body := `{"quota": {"quota": 500, "subscription_id": "` + subscriptionID + `",` +
 		`"resource_type": {"name": "cpu.hours", "unit": "cpu hours"}}}`
-	assertGolden(t, "goqu_quota_added", do(t, http.MethodPut, "/quotas", body), http.StatusInternalServerError)
+	assertGolden(t, "goqu_quota_added", do(t, http.MethodPut, "/quotas", body), http.StatusOK)
 }
 
 func TestGoquAddUsage(t *testing.T) {
