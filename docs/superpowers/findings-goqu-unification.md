@@ -53,6 +53,19 @@ fail the branch's golden-diff success criterion. Reproduce the current,
 under-populated shape exactly. Fixing this is deliberately deferred to a
 follow-up change outside this branch.
 
+**FIXED on `goqu-deferred-fixes`.** `GetActivePlanQuotaDefaults`
+(`internal/qmsapi/db/plan_goqu.go`) now collects the `resource_type_id` of
+every row it scanned and loads the types with `resourceTypesByID`, the same
+batch loader `loadPlanDetailsBatch` and the subscription and update loaders
+already use, assigning each one onto its quota default. The `DISTINCT ON`
+query itself is unchanged — the resource types are loaded separately rather
+than joined in, so the row order the golden pins is untouched. Golden that
+moved: `apitest/testdata/v1_plan_active_quota_defaults.json`, whose two
+entries now carry the real `id`, `name`, `unit`, and `consumable` for
+`cpu.hours` and `data.size` in place of the bare `"consumable": false`. The
+only other caller, `TestEmptyPlanListingsAreArrays`, exercises the empty
+case, where the loader is a no-op.
+
 ## `GET /v1/users` and `GET /v1/usages/{username}/updates`: no `ORDER BY`, rows come back in arbitrary order
 
 **Observed behavior:** both listings can return their rows in any order,

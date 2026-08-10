@@ -310,9 +310,6 @@ func GetActivePlanRate(ctx context.Context, tx *goqu.TxDatabase, planID string) 
 
 // GetActivePlanQuotaDefaults returns the currently active quota defaults for a subscription plan, which are the quota
 // defaults for each resource type with the most recent effective date that has already passed.
-//
-// The resource type of each quota default is deliberately left unloaded: the query this replaces never joined
-// resource_types, and the response the route returns is pinned with the resulting empty resource_type objects.
 func GetActivePlanQuotaDefaults(
 	ctx context.Context, tx *goqu.TxDatabase, planID string,
 ) ([]model.PlanQuotaDefault, error) {
@@ -332,6 +329,20 @@ func GetActivePlanQuotaDefaults(
 		ScanStructsContext(ctx, &planQuotaDefaults)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	resourceTypeIDs := make([]string, 0, len(planQuotaDefaults))
+	for _, planQuotaDefault := range planQuotaDefaults {
+		resourceTypeIDs = append(resourceTypeIDs, *planQuotaDefault.ResourceTypeID)
+	}
+	resourceTypes, err := resourceTypesByID(ctx, tx, resourceTypeIDs)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+	for i := range planQuotaDefaults {
+		if resourceType, ok := resourceTypes[*planQuotaDefaults[i].ResourceTypeID]; ok {
+			planQuotaDefaults[i].ResourceType = *resourceType
+		}
 	}
 
 	return planQuotaDefaults, nil

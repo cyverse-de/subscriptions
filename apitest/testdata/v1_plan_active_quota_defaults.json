@@ -5,7 +5,10 @@
       "id": "<uuid>",
       "quota_value": 200,
       "resource_type": {
-        "consumable": false
+        "consumable": true,
+        "id": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb",
+        "name": "cpu.hours",
+        "unit": "cpu hours"
       }
     },
     {
@@ -13,7 +16,10 @@
       "id": "<uuid>",
       "quota_value": 5368709120,
       "resource_type": {
-        "consumable": false
+        "consumable": false,
+        "id": "99e3f91e-950a-11ec-84a4-406c8f3e9cbb",
+        "name": "data.size",
+        "unit": "bytes"
       }
     }
   ],
