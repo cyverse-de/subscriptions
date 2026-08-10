@@ -46,23 +46,54 @@ type Server struct {
 	UsernameSuffix string
 }
 
+// runCallback runs a transaction callback, rolling the transaction back and re-panicking if it panics so that
+// middleware.Recover still turns the panic into a 500.
+func runCallback(tx *goqu.TxDatabase, fn func(tx *goqu.TxDatabase) error) error {
+	defer func() {
+		if p := recover(); p != nil {
+			rollback(tx)
+			panic(p)
+		}
+	}()
+	return fn(tx)
+}
+
+// rollback rolls a failed transaction back. A failed ROLLBACK is logged rather than reported, because the error that
+// caused the rollback is the one the caller has to answer with.
+func rollback(tx *goqu.TxDatabase) {
+	if err := tx.Rollback(); err != nil {
+		log.Errorf(
+			"unable to roll the transaction back: %s; the transaction had either already finished or lost its "+
+				"database connection", err,
+		)
+	}
+}
+
 // goquTransaction runs fn inside a database transaction, unwrapping the response written by any txError call within it
 // so that echo sees the handler's real return value. The transaction is started with the request context so that a
 // caller that has already given up doesn't leave a goroutine waiting for a free connection.
+//
+// The transaction is committed and rolled back here rather than through goqu's (*TxDatabase).Wrap because Wrap
+// replaces the callback's error with the ROLLBACK error whenever ROLLBACK itself fails. That loses the txAbort marker
+// this unwraps, and reports transaction plumbing to the client in place of the failure the handler actually saw.
 func (s Server) goquTransaction(ctx context.Context, fn func(tx *goqu.TxDatabase) error) error {
 	tx, err := s.GoquDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 
-	err = tx.Wrap(func() error { return fn(tx) })
+	if err := runCallback(tx, fn); err != nil {
+		rollback(tx)
 
-	var abort txAbort
-	if errors.As(err, &abort) {
-		return abort.response
+		var abort txAbort
+		if errors.As(err, &abort) {
+			return abort.response
+		}
+
+		return err
 	}
 
-	return err
+	return tx.Commit()
 }
 
 // ServerInfo returns basic information about the server.
