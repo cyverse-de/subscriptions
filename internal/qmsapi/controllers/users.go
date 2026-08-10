@@ -418,8 +418,9 @@ func (s Server) ListUserSubscriptions(ctx echo.Context) error {
 		return err
 	})
 	if err != nil {
+		// Every way the caller can get this wrong is rejected above, so anything that fails here is a server fault.
 		log.Error(err)
-		return model.Error(ctx, err.Error(), http.StatusBadRequest)
+		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
 	}
 
 	// Build the result.

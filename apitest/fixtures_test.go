@@ -105,6 +105,24 @@ func updateBody(resourceName, unit, operation string, value float64) string {
 	)
 }
 
+// unscannableResourceType inserts a resource type whose consumable column is
+// NULL, which model.ResourceType declares as a plain bool, so every query that
+// reads the row fails the scan. It is the only handle this suite has on the
+// error path of a resource type lookup: resource_types has no other nullable
+// column, and the alternatives (dropping a column, revoking a privilege,
+// closing the pool) break every other query in the same request too. The row is
+// removed when the test ends, taking anything referencing it with it through
+// the ON DELETE CASCADE on resource_type_id.
+func unscannableResourceType(t *testing.T, name string) {
+	t.Helper()
+	cleanupResourceType(t, name)
+	if _, err := testDB.Exec(
+		`INSERT INTO resource_types (name, unit, consumable) VALUES ($1, 'broken', NULL)`, name,
+	); err != nil {
+		t.Fatalf("unable to insert the unscannable resource type: %s", err)
+	}
+}
+
 // queryFloat runs a single-value query against the test database.
 func queryFloat(t *testing.T, query string, args ...any) float64 {
 	t.Helper()

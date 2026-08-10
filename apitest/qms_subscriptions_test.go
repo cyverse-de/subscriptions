@@ -43,6 +43,35 @@ func TestUserSubscriptionEndpoints(t *testing.T) {
 	})
 }
 
+// A database failure while listing a user's subscriptions used to be reported
+// as 400 Bad Request, telling the caller its own input was at fault. Bad input
+// is still a 400: the username, include-expired and cutoff parameters are all
+// validated before the listing runs. Nothing in the golden set reaches this
+// path, so the failure is injected into a row the listing has to read — a quota
+// on the user's own subscription pointing at a resource type that cannot be
+// scanned.
+func TestListUserSubscriptionsReportsADatabaseFailure(t *testing.T) {
+	resetDB(t)
+	createUser(t, testUser)
+	unscannableResourceType(t, "test.unscannable")
+
+	if _, err := testDB.Exec(`
+		INSERT INTO quotas (subscription_id, resource_type_id, quota)
+		SELECT s.id, rt.id, 1
+		  FROM subscriptions s
+		  JOIN users u ON s.user_id = u.id
+		  JOIN resource_types rt ON rt.name = $2
+		 WHERE u.username = $1`, trimmedUser, "test.unscannable",
+	); err != nil {
+		t.Fatalf("unable to add the quota referring to the unscannable resource type: %s", err)
+	}
+
+	got := do(t, http.MethodGet, "/v1/users/"+testUser+"/subscriptions", "")
+	if got.status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body: %s", got.status, got.body)
+	}
+}
+
 // PUT /v1/users/{username}/{plan_name} backs both the admin and the
 // service-account plan-change routes in terrain. The query parameters are the
 // ones terrain forwards.

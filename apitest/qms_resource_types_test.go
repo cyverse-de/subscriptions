@@ -108,22 +108,6 @@ func TestUpdateResourceType(t *testing.T) {
 	}
 }
 
-// unscannableResourceType inserts a resource type whose consumable column is
-// NULL, which model.ResourceType declares as a plain bool, so any query that
-// reads the row fails the scan. It is the only handle this suite has on the
-// error path of a resource type lookup: the table has no other nullable column,
-// and every other way to break the query (dropping a column, revoking a
-// privilege) breaks every other lookup in the same request too.
-func unscannableResourceType(t *testing.T, name string) {
-	t.Helper()
-	cleanupResourceType(t, name)
-	if _, err := testDB.Exec(
-		`INSERT INTO resource_types (name, unit, consumable) VALUES ($1, 'broken', NULL)`, name,
-	); err != nil {
-		t.Fatalf("unable to insert the unscannable resource type: %s", err)
-	}
-}
-
 // A failed homonym lookup used to be reported as 409 Conflict along with the raw
 // database error, so a server fault reached the caller as "you picked a name
 // that's taken". Only a real collision is a conflict. Nothing in the golden set

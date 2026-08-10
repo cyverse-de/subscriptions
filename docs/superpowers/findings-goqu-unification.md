@@ -1223,6 +1223,23 @@ the `Begin()` failure now folded into the same branch. Recorded because it is
 the one handler in this file whose error mapping is visibly wrong and no golden
 reaches it; repairing it belongs outside this branch.
 
+**FIXED on `goqu-deferred-fixes`.** The branch now returns
+`http.StatusInternalServerError`. Bad input is untouched and still 400: the
+username, `include-expired` and `cutoff` parameters are all validated and
+rejected before the transaction opens, so nothing the caller controls can reach
+this branch.
+
+**It is exercised now.** `TestListUserSubscriptionsReportsADatabaseFailure`
+(`apitest/qms_subscriptions_test.go`) uses the same injection as the resource
+type fix above — a resource type row whose nullable `consumable` column is
+NULL, which `ScanStruct` cannot read into `model.ResourceType.Consumable` — and
+attaches it to the user's own subscription with a `quotas` row, so
+`quotasBySubscriptionID`'s `resourceTypesByID` call fails inside
+`ListSubscriptionsForUser`. The helper, `unscannableResourceType`, moved to
+`apitest/fixtures_test.go` when it acquired its second caller. The test was
+observed failing at 400 before the change. No golden moved; none covers this
+path.
+
 ## Task 15: `?limit=0` is the one reachable behavior change goqu introduces silently
 
 `GET /v1/subscriptions` accepts `limit` validated as `gte=0`, so zero is a legal
