@@ -1323,15 +1323,54 @@ produces a distinct statement text.
   claimed — but "some instance in this fleet has run with the setting off" is
   an observed fact, not a theoretical configuration.
 
-**Follow-up to evaluate, not to do here:** `goqu.SetDefaultPrepared(true)` in
-`main.go` is a one-line change, but it would also change the emitted SQL for
-the routes that already use goqu (the top-level `db/` layer), so it needs its
-own verification pass — golden diffs, a check that every scanned type still
-round-trips through bind parameters — rather than being folded into this
-branch's "reproduce current behavior exactly" scope. An alternative or
-complement that doesn't touch query generation at all: assert
-`standard_conforming_strings = on` at startup and fail fast if it isn't,
-turning the precondition for exploitability into a deployment-time check.
+**Resolved on this branch.** The follow-up this entry originally deferred was
+carried out; values are now bound rather than interpolated, service-wide.
+`goqu.SetDefaultPrepared(true)` runs from an `init()` in `db/tables`, which is
+the one package every query-building package in the repo imports for its table
+identifiers — `main.go` alone would have left the test binaries, which build
+their router without going through `main`, exercising a different mode than
+production. The 69 goldens are byte-identical across the change, and the
+before/after statements PostgreSQL received are recorded in
+`docs/superpowers/prepared-mode-report.md`.
+
+Three things had to be fixed for it to work, and they are the non-obvious part:
+
+- **Four call sites discarded their bind arguments.** `GetOperationID`
+  (`db/operations.go`), `GetResourceTypeID` (`db/resourcetypes.go`),
+  `GetUserID` (`db/users.go`), and `UserUpdates` (`db/updates.go`) each ran
+  `qs, _, err := query.ToSQL()` and then executed `qs` alone. That is correct
+  only while the values are interpolated into `qs`; in prepared mode it sends
+  placeholders with no parameters. All four now execute through the dataset's
+  `Executor()`, which builds and binds the statement itself, so there is no
+  rendered string for a caller to drop arguments from. All four were in the
+  pre-existing `db/` layer — the converted `internal/qmsapi/db` layer has no
+  `ToSQL()` calls at all and was immune.
+- **The dialect name was wrong, and prepared mode is what exposed it.**
+  `db.New` asked for `goqu.New("postgresql", ...)`, but
+  `goqu/v9/dialect/postgres` registers itself as `"postgres"`; an unrecognized
+  name silently falls back to goqu's default dialect. That was invisible while
+  everything was interpolated, because the default dialect's output happens to
+  be valid PostgreSQL for the statements this service builds — but its
+  placeholder is `?`, not `$1`, so the entire suite failed with `pq: syntax
+  error at or near ")"` the moment parameters were bound. Every goqu query
+  this service has ever issued was rendered with the default dialect.
+- **Two unconditional `log.Info(upsertE.ToSQL())` calls** (`db/quotas.go`,
+  `db/usages.go`) passed all three return values to logrus, which concatenated
+  them. The SQL text no longer carries the values, so the statement and its
+  parameters now go through a shared `logStatement` helper that formats them
+  as `%s %v` — the same format `LogSQL` already used, which `LogSQL` now
+  delegates to rather than duplicating.
+
+**What remains.** Asserting `standard_conforming_strings = on` at startup is
+no longer needed to close this specific exposure, since nothing depends on
+goqu's escaping any more; it would only be defense in depth. The one new
+constraint prepared mode introduces is PostgreSQL's 65535-parameter ceiling
+per statement, which interpolation did not have — the analysis of which
+listings could approach it is in the report, and the short version is that
+`GET /v1/admin/subscriptions` accepts an unbounded `limit` and its batch
+loaders build undeduplicated `IN` lists, so a caller asking for tens of
+thousands of rows in one page could now get an error where it previously got
+a very large statement.
 
 **Two near-misses that were chased and cleared, recorded so nobody re-hunts
 them:**

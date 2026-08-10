@@ -110,7 +110,7 @@ func (d *Database) UpsertQuota(ctx context.Context, value float64, resourceTypeI
 				goqu.C("quota").Set(goqu.I("excluded.quota"))),
 		).Executor()
 
-	log.Info(upsertE.ToSQL())
+	logStatement(upsertE)
 
 	_, err = upsertE.ExecContext(ctx)
 	if err != nil {

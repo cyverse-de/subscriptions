@@ -17,7 +17,10 @@ type Database struct {
 }
 
 func New(dbconn *sqlx.DB) *Database {
-	goquDB := goqu.New("postgresql", dbconn)
+	// "postgres" is the name goqu/v9/dialect/postgres registers itself under.
+	// An unrecognized name silently falls back to goqu's default dialect, whose
+	// placeholder is "?" rather than "$1".
+	goquDB := goqu.New("postgres", dbconn)
 	return &Database{
 		fullDB: goquDB, // Used when a method needs to use a method not defined in the GoquDatabase interface.
 		goquDB: goquDB, // Used when a method needs to optionally support being run inside a transaction.
@@ -33,13 +36,20 @@ func (d *Database) EnableSQLLogging() {
 // LogSQL logs an SQL statement that is being executed if debugging is enabled.
 func (d *Database) LogSQL(statement SQLStatement) {
 	if d.logSQL {
-		sql, args, err := statement.ToSQL()
-		if err != nil {
-			log.Errorf("unable to generate the SQL: %s", err)
-			return
-		}
-		log.Infof("%s %v", sql, args)
+		logStatement(statement)
 	}
+}
+
+// logStatement logs a statement alongside its bound parameters. Both are needed
+// to reconstruct what ran: queries are prepared, so the SQL text carries
+// placeholders rather than the values they stand for.
+func logStatement(statement SQLStatement) {
+	sql, args, err := statement.ToSQL()
+	if err != nil {
+		log.Errorf("unable to generate the SQL: %s", err)
+		return
+	}
+	log.Infof("%s %v", sql, args)
 }
 
 func (d *Database) Begin() (*goqu.TxDatabase, error) {
