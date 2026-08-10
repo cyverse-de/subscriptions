@@ -249,7 +249,7 @@ func loadSubscriptionDetails(ctx context.Context, tx *goqu.TxDatabase, subscript
 	// guard. That is safe only because subscriptions.plan_id is a NOT NULL foreign key, so the row cannot be absent;
 	// anything that relaxes the constraint has to give the consumers a nil check first.
 	if subscription.PlanID != nil {
-		plan, err := getPlanByID(ctx, tx, *subscription.PlanID)
+		plan, err := GetPlanByID(ctx, tx, *subscription.PlanID)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		}

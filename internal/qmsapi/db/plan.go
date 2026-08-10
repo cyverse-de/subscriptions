@@ -40,8 +40,8 @@ func GetPlanGORM(ctx context.Context, db *gorm.DB, planName string) (*model.Plan
 	return &plan, nil
 }
 
-// CheckPlanNameExistence determines whether or not a subscription plan with a given name exists.
-func CheckPlanNameExistence(ctx context.Context, db *gorm.DB, planName string) (bool, error) {
+// CheckPlanNameExistenceGORM determines whether or not a subscription plan with a given name exists.
+func CheckPlanNameExistenceGORM(ctx context.Context, db *gorm.DB, planName string) (bool, error) {
 	wrapMsg := fmt.Sprintf("unable to look up plan Name `%s`", planName)
 	var err error
 
@@ -61,8 +61,8 @@ func CheckPlanNameExistence(ctx context.Context, db *gorm.DB, planName string) (
 	return exists, nil
 }
 
-// CheckPlanExistence determines whether or not a subscription plan with the given identifier exists.
-func CheckPlanExistence(ctx context.Context, db *gorm.DB, planID string) (bool, error) {
+// CheckPlanExistenceGORM determines whether or not a subscription plan with the given identifier exists.
+func CheckPlanExistenceGORM(ctx context.Context, db *gorm.DB, planID string) (bool, error) {
 	wrapMsg := fmt.Sprintf("unable to look up plan ID '%s'", planID)
 	var err error
 
@@ -81,8 +81,8 @@ func CheckPlanExistence(ctx context.Context, db *gorm.DB, planID string) (bool, 
 	return exists, nil
 }
 
-// GetPlanByID looks up the plan with the given identifier.
-func GetPlanByID(ctx context.Context, db *gorm.DB, planID string) (*model.Plan, error) {
+// GetPlanByIDGORM looks up the plan with the given identifier.
+func GetPlanByIDGORM(ctx context.Context, db *gorm.DB, planID string) (*model.Plan, error) {
 	wrapMsg := fmt.Sprintf("unable to look up plan ID '%s'", planID)
 	var err error
 
@@ -109,8 +109,8 @@ func GetPlanByID(ctx context.Context, db *gorm.DB, planID string) (*model.Plan, 
 	return &plan, nil
 }
 
-// GetActivePlanRate returns the currently active rate for a subscription plan.
-func GetActivePlanRate(ctx context.Context, db *gorm.DB, planID string) (*model.PlanRate, error) {
+// GetActivePlanRateGORM returns the currently active rate for a subscription plan.
+func GetActivePlanRateGORM(ctx context.Context, db *gorm.DB, planID string) (*model.PlanRate, error) {
 	wrapMsg := fmt.Sprintf("unable to look up the active plan rate for '%s'", planID)
 	var err error
 
@@ -133,8 +133,8 @@ func GetActivePlanRate(ctx context.Context, db *gorm.DB, planID string) (*model.
 	return &planRate, nil
 }
 
-// GetActivePlanQuotaDefaults returns the currently active quota defaults for a subscription plan.
-func GetActivePlanQuotaDefaults(ctx context.Context, db *gorm.DB, planID string) ([]model.PlanQuotaDefault, error) {
+// GetActivePlanQuotaDefaultsGORM returns the currently active quota defaults for a subscription plan.
+func GetActivePlanQuotaDefaultsGORM(ctx context.Context, db *gorm.DB, planID string) ([]model.PlanQuotaDefault, error) {
 	wrapMsg := fmt.Sprintf("unable to look up the active plan quota defaults for '%s'", planID)
 	var err error
 
@@ -154,8 +154,8 @@ func GetActivePlanQuotaDefaults(ctx context.Context, db *gorm.DB, planID string)
 	return planQuotaDefaults, nil
 }
 
-// ListPlans lists all of the plans that are currently available.
-func ListPlans(ctx context.Context, db *gorm.DB) ([]*model.Plan, error) {
+// ListPlansGORM lists all of the plans that are currently available.
+func ListPlansGORM(ctx context.Context, db *gorm.DB) ([]*model.Plan, error) {
 	wrapMsg := "unable to list plans"
 	var err error
 
@@ -196,7 +196,7 @@ func GetDefaultQuotaForPlan(ctx context.Context, db *gorm.DB, planID string) ([]
 
 // GetPlansByName builds a map from plan name to plan details.
 func GetPlansByName(ctx context.Context, db *gorm.DB) (map[string]*model.Plan, error) {
-	plans, err := ListPlans(ctx, db)
+	plans, err := ListPlansGORM(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +210,7 @@ func GetPlansByName(ctx context.Context, db *gorm.DB) (map[string]*model.Plan, e
 	return result, nil
 }
 
-func SavePlanQuotaDefaults(ctx context.Context, db *gorm.DB, planQuotaDefaults []model.PlanQuotaDefault) error {
+func SavePlanQuotaDefaultsGORM(ctx context.Context, db *gorm.DB, planQuotaDefaults []model.PlanQuotaDefault) error {
 	wrapMsg := "unable to save the plan quota defaults"
 
 	err := db.Create(planQuotaDefaults).Error
@@ -221,7 +221,7 @@ func SavePlanQuotaDefaults(ctx context.Context, db *gorm.DB, planQuotaDefaults [
 	return nil
 }
 
-func SavePlanRates(ctx context.Context, db *gorm.DB, planRates []model.PlanRate) error {
+func SavePlanRatesGORM(ctx context.Context, db *gorm.DB, planRates []model.PlanRate) error {
 	wrapMsg := "unable to save the plan rates"
 
 	err := db.Create(planRates).Error

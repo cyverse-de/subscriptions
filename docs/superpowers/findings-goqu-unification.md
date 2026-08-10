@@ -888,3 +888,88 @@ one quota per resource type per subscription. Dropping the write-back entirely
 was the other option and was rejected: GORM populated these ids, Tasks 14 and 15
 both convert callers of `SubscribeUserToPlan`, and a caller that starts reading
 `subscription.Quotas[i].ID` should find a correct value rather than a nil one.
+
+## `GetDefaultQuotaForPlan` has no callers: Task 16 should delete it, not convert it
+
+`GetDefaultQuotaForPlan` (`internal/qmsapi/db/plan.go`) is called from nowhere
+in the repo — not from `controllers`, not from `app`, not from the top-level
+`db` package, not from a test. It is also the only function in that file with
+no doc comment and with a commented-out line of a previous implementation left
+in its body.
+
+Task 13 left it on GORM deliberately rather than translating it. Converting
+dead code would have meant inventing a not-found and empty-slice contract for
+it with nothing to check the choice against, and would have made it look live.
+It is recorded here so that Task 16 removes it along with the `*GORM` leftovers
+instead of treating it as a function whose conversion was forgotten.
+
+## Task 13: the plan conversion's three deliberate non-translations
+
+Task 12 had already written the `Preload` graph as `loadPlanDetails`, so the
+risk in Task 13 was not the joins but the handful of places where the faithful
+translation is *not* the natural one.
+
+**The orderings were verified by capture, not by reading.** With
+`logger.Default.LogMode(logger.Info)` on `InitGORMConnection` and
+`goquDB.Logger(...)` in `db.New`, the plan tests emit both statement lists.
+They agree term for term: the quota defaults join `resource_types` and sort by
+`plan_quota_defaults.effective_date ASC, resource_types.name ASC`; the nested
+resource-type preload is `resourceTypesByID`'s `IN` query; the rates sort by
+`effective_date ASC`. `loadPlanDetails` needed no change, and `plans_list.json`
+was byte-identical.
+
+The one structural difference is that GORM preloaded all four plans' quota
+defaults and rates in one `IN (...)` query per association, while `ListPlans`
+calls `loadPlanDetails` per plan. The rows and their per-plan order are the
+same — filtering a globally sorted result by plan and sorting a per-plan result
+by the same key give the same sequence — so it is N+1 queries, not a behavior
+change. Four plans is the whole table; a listing large enough for that to
+matter would need the batched form back.
+
+**`GetActivePlanRate` must not report absence.** GORM ran `Find` into a
+`model.PlanRate{PlanID: &planID}` — a struct, not a slice — so a plan with no
+active rate left the destination untouched and returned a nil error, and the
+handler answered `200` with `{"id" omitted, "effective_date":
+"0001-01-01T00:00:00Z", "rate": 0}`. goqu's `ScanStructContext` also leaves the
+destination untouched when there are no rows, so the goqu version keeps the
+pre-populated struct and deliberately ignores the `found` result. Translating
+this one to `ErrNotFound` like every other single-row lookup in the package
+would turn a `200` into a `404` for a plan whose rates are all in the future.
+
+**The two existence checks stay `count(*) > 0`.** `CheckPlanExistence` and
+`CheckPlanNameExistence` return `(bool, error)`, and their callers turn `false`
+into a 404 or a 400 of their own. Rewriting them as a lookup that reports
+`ErrNotFound` would work, but it would move the 404 decision out of the handler
+and put an error on a path that has none today.
+
+### The plan writes drop two things GORM did, both deliberately
+
+`SavePlanQuotaDefaults` and `SavePlanRates` are plain multi-row inserts with no
+`RETURNING`. GORM recorded the generated ids on the structs it was handed; the
+goqu versions do not, and both callers re-read the plan through `GetPlanByID`
+rather than reading those ids, so nothing observes the difference.
+
+This is the opposite of the choice `saveSubscriptionQuotas` made, and the
+reason is that the natural key here is not usable. The unique index on
+`plan_quota_defaults (resource_type_id, effective_date, plan_id)` includes a
+timestamp, and `plan_rates (plan_id, effective_date)` is a timestamp outright.
+A `time.Time` carries nanoseconds and Postgres stores microseconds, so a
+`RETURNING` row's `effective_date` need not equal the value in the struct that
+produced it, and a map keyed on it would miss. Matching by position is what the
+`saveSubscriptionQuotas` correction forbids. Given a choice between an
+unsound key, a forbidden positional match, and dropping an unread value, the
+value is dropped — and a future caller that needs these ids should re-read the
+plan, which is what both handlers already do.
+
+`SavePlan` also drops the `INSERT INTO resource_types ... ON CONFLICT DO
+NOTHING` that GORM emitted once per quota default. That statement was GORM
+saving the `belongs to` association before inserting the child row; every
+resource type it wrote had just been read out of `resource_types` by
+`GetResourceTypeByName`, so the insert always conflicted and always affected
+zero rows. The goqu version reads the resource type's id straight off the
+struct, which is the only effect the statement had.
+
+**`GET /v1/plans` and `GET /v1/plans/{plan_id}` join the set of read handlers
+that now open a transaction** (see the section above on the database-down 500
+body). Both ran against `s.GORMDB` with no transaction; both now use
+`s.goquTransaction`, because the goqu query functions take a `*goqu.TxDatabase`.
