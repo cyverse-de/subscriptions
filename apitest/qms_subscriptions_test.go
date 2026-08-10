@@ -263,10 +263,32 @@ func TestBulkSubscriptionEndpoints(t *testing.T) {
 		}
 	})
 
+	// The rejection message must state the accepted range, not just refuse the
+	// request, since the whole point of rejecting (rather than clamping) is
+	// that the caller learns why 5000 didn't work.
 	t.Run("limit above the upper bound is rejected", func(t *testing.T) {
-		got := do(t, http.MethodGet, "/v1/subscriptions?offset=0&limit=1001", "")
+		got := do(t, http.MethodGet, "/v1/subscriptions?offset=0&limit=5000", "")
 		if got.status != http.StatusBadRequest {
 			t.Fatalf("status = %d, body %s", got.status, got.body)
+		}
+		body := mustDecode(t, got)
+		errMsg, _ := body["error"].(string)
+		wantMsg := "invalid query parameter: limit: must be between 0 and 1000 (got 5000)"
+		if errMsg != wantMsg {
+			t.Errorf("error = %q, want %q", errMsg, wantMsg)
+		}
+	})
+
+	t.Run("a negative offset is rejected with the accepted range", func(t *testing.T) {
+		got := do(t, http.MethodGet, "/v1/subscriptions?offset=-1&limit=50", "")
+		if got.status != http.StatusBadRequest {
+			t.Fatalf("status = %d, body %s", got.status, got.body)
+		}
+		body := mustDecode(t, got)
+		errMsg, _ := body["error"].(string)
+		wantMsg := "invalid query parameter: offset: must be at least 0 (got -1)"
+		if errMsg != wantMsg {
+			t.Errorf("error = %q, want %q", errMsg, wantMsg)
 		}
 	})
 

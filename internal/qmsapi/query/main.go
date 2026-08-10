@@ -106,11 +106,43 @@ func ValidateIntQueryParam(ctx echo.Context, name string, defaultValue *int32, c
 	// Perform any checks that we're supposed to perform.
 	for _, check := range checks {
 		if err = v.Var(result, check); err != nil {
+			if desc := rangeDescription(checks); desc != "" {
+				return result, fmt.Errorf("%s: %s (got %d)", errMsg, desc, result)
+			}
 			return result, errors.Wrap(err, errMsg)
 		}
 	}
 
 	return result, nil
+}
+
+// rangeDescription renders a human-readable acceptable range from the
+// gte/gt/lte/lt bounds present in checks (e.g. "gte=0", "lte=1000"), so a
+// caller who fails a bound is told the range rather than shown the
+// validator's internal error. Checks it can't interpret are ignored, and an
+// empty result means the caller should fall back to the raw validator error.
+func rangeDescription(checks []string) string {
+	bounds := make(map[string]string, len(checks))
+	for _, check := range checks {
+		if tag, val, ok := strings.Cut(check, "="); ok {
+			bounds[tag] = val
+		}
+	}
+
+	switch {
+	case bounds["gte"] != "" && bounds["lte"] != "":
+		return fmt.Sprintf("must be between %s and %s", bounds["gte"], bounds["lte"])
+	case bounds["gte"] != "":
+		return fmt.Sprintf("must be at least %s", bounds["gte"])
+	case bounds["lte"] != "":
+		return fmt.Sprintf("must be at most %s", bounds["lte"])
+	case bounds["gt"] != "":
+		return fmt.Sprintf("must be greater than %s", bounds["gt"])
+	case bounds["lt"] != "":
+		return fmt.Sprintf("must be less than %s", bounds["lt"])
+	default:
+		return ""
+	}
 }
 
 // contains returns true if the given slice of strings contains the given string.
