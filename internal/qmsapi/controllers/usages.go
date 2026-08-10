@@ -75,7 +75,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 		"value":      usage.UsageValue,
 	})
 
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.goquTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		// Look up the currently active user plan, adding a default plan if one doesn't exist already.
 		subscription, err := qmsdb.GetActiveSubscriptionDetails(ctx, tx, username)
 		if err != nil {
@@ -197,7 +197,7 @@ func (s Server) GetAllUsageOfUser(ctx echo.Context) error {
 	// GetActiveSubscriptionDetails subscribes the user to the default plan when they have no active subscription, so
 	// this read path writes and needs a transaction of its own.
 	var subscription *model.Subscription
-	err = s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 		var err error
 		subscription, err = qmsdb.GetActiveSubscriptionDetails(context, tx, username)
 		return err
@@ -231,7 +231,7 @@ func (s Server) GetAllUsageUpdatesForUser(ctx echo.Context) error {
 
 	context := ctx.Request().Context()
 	var updates []model.Update
-	err = s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 		var err error
 		updates, err = qmsdb.ListUpdatesForUser(context, tx, username)
 		return err

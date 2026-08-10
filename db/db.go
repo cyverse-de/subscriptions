@@ -1,6 +1,9 @@
 package db
 
 import (
+	"context"
+	"database/sql"
+
 	"github.com/cyverse-de/go-mod/logging"
 	"github.com/doug-martin/goqu/v9"
 	"github.com/sirupsen/logrus"
@@ -54,6 +57,12 @@ func logStatement(statement SQLStatement) {
 
 func (d *Database) Begin() (*goqu.TxDatabase, error) {
 	return d.fullDB.Begin()
+}
+
+// BeginTx starts a transaction that honors the given context. Unlike Begin, it gives up when the caller does rather
+// than waiting indefinitely for a free connection when the pool is saturated.
+func (d *Database) BeginTx(ctx context.Context, opts *sql.TxOptions) (*goqu.TxDatabase, error) {
+	return d.fullDB.BeginTx(ctx, opts)
 }
 
 func (d *Database) querySettings(opts ...QueryOption) (*QuerySettings, GoquDatabase) {

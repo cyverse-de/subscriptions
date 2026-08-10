@@ -41,7 +41,7 @@ func (s Server) GetAllPlans(ctx echo.Context) error {
 
 	context := ctx.Request().Context()
 
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 		plans, err := qmsdb.ListPlans(context, tx)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
@@ -83,7 +83,7 @@ func (s Server) GetPlanByID(ctx echo.Context) error {
 	log.Debug("extracted and validated then plan ID from request")
 
 	// Look up the plan.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 		plan, err := qmsdb.GetPlanByID(context, tx, planID)
 		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("plan ID %s not found", planID)
@@ -132,7 +132,7 @@ func (s Server) AddPlan(ctx echo.Context) error {
 	log.Debugf("adding a new plan to the database: %+v", plan)
 
 	// Begin a transaction.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 		dbPlan := plan.ToDBModel()
 
 		// Make sure that a plan with the same name doesn't already exist.
@@ -204,7 +204,7 @@ func (s Server) GetActivePlanRate(ctx echo.Context) error {
 	log.Info("getting the active rate for a plan")
 
 	// Begin a transaction.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.goquTransaction(ctx.Request().Context(), func(tx *goqu.TxDatabase) error {
 		context := ctx.Request().Context()
 
 		// Verify that the plan exists.
@@ -261,7 +261,7 @@ func (s Server) GetActiveQuotaDefaults(ctx echo.Context) error {
 	log.Info("getting active plan quota defaults for an existing plan")
 
 	// Begin a transaction.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.goquTransaction(ctx.Request().Context(), func(tx *goqu.TxDatabase) error {
 		context := ctx.Request().Context()
 
 		// Verify that the plan exists.
@@ -327,7 +327,7 @@ func (s Server) AddPlanQuotaDefaults(ctx echo.Context) error {
 	}
 
 	// Begin a transaction.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.goquTransaction(ctx.Request().Context(), func(tx *goqu.TxDatabase) error {
 		context := ctx.Request().Context()
 
 		// Verify that the plan exists.
@@ -439,7 +439,7 @@ func (s Server) AddPlanRates(ctx echo.Context) error {
 	}
 
 	// Begin a transaction.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.goquTransaction(ctx.Request().Context(), func(tx *goqu.TxDatabase) error {
 		context := ctx.Request().Context()
 
 		// Verify that the plan existws.

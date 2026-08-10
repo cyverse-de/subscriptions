@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -46,9 +47,10 @@ type Server struct {
 }
 
 // goquTransaction runs fn inside a database transaction, unwrapping the response written by any txError call within it
-// so that echo sees the handler's real return value.
-func (s Server) goquTransaction(fn func(tx *goqu.TxDatabase) error) error {
-	tx, err := s.GoquDB.Begin()
+// so that echo sees the handler's real return value. The transaction is started with the request context so that a
+// caller that has already given up doesn't leave a goroutine waiting for a free connection.
+func (s Server) goquTransaction(ctx context.Context, fn func(tx *goqu.TxDatabase) error) error {
+	tx, err := s.GoquDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}

@@ -15,7 +15,7 @@ import (
 // the user doesn't exist then the appropriate response will be sent to the caller and an error will be returned.
 func (s Server) ValidateUser(ctx echo.Context, username string) error {
 	var exists bool
-	err := s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	err := s.goquTransaction(ctx.Request().Context(), func(tx *goqu.TxDatabase) error {
 		var err error
 		exists, err = qmsdb.UserExists(ctx.Request().Context(), tx, username)
 		return err
