@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 )
 
@@ -355,5 +356,60 @@ func TestAddUserResponse(t *testing.T) {
 	stored := queryInt(t, `SELECT count(*) FROM users WHERE username = $1`, trimmedUser)
 	if stored != 1 {
 		t.Errorf("users rows = %d, want 1", stored)
+	}
+}
+
+// The subscription search escapes the LIKE metacharacters so that a term
+// containing one matches it literally. The backslash is a metacharacter too --
+// it is PostgreSQL's default LIKE escape character -- and a term containing one
+// used to have it consume the following character, quietly returning every
+// username matching the term with the backslash removed and never the username
+// that actually contains it.
+//
+// The percent case additionally pins the escaping order: escaping the backslash
+// after % and _ rather than before would double the backslashes just introduced
+// in front of them and turn those wildcards live again.
+func TestSubscriptionSearchEscapesLikeMetacharacters(t *testing.T) {
+	resetDB(t)
+
+	for _, username := range []string{`a\b`, `a%b`, "ab"} {
+		subscribeUser(t, username, "Basic")
+	}
+
+	testCases := []struct {
+		name   string
+		search string
+		want   string
+	}{
+		{name: "a backslash matches only the username containing it", search: `a\b`, want: `a\b`},
+		{name: "a percent sign matches only the username containing it", search: `a%b`, want: `a%b`},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := "/v1/subscriptions?offset=0&limit=50&search=" + url.QueryEscape(tc.search)
+			got := do(t, http.MethodGet, path, "")
+			if got.status != http.StatusOK {
+				t.Fatalf("status = %d, body %s", got.status, got.body)
+			}
+
+			result, ok := mustDecode(t, got)["result"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected response shape: %s", got.body)
+			}
+			listed, ok := result["subscriptions"].([]any)
+			if !ok || len(listed) != 1 {
+				t.Fatalf("matched %d subscriptions, want exactly 1; body: %s", len(listed), got.body)
+			}
+
+			subscription, _ := listed[0].(map[string]any)
+			user, _ := subscription["user"].(map[string]any)
+			if username, _ := user["username"].(string); username != tc.want {
+				t.Errorf("matched username = %q, want %q", username, tc.want)
+			}
+			if total, _ := result["total"].(float64); total != 1 {
+				t.Errorf("total = %v, want 1", total)
+			}
+		})
 	}
 }

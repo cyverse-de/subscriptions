@@ -1610,3 +1610,63 @@ That is a coherent two-rule convention: check `found` on a lookup, ignore it
 on a bare aggregate. Recorded here so the next reader doesn't "fix"
 `HasActiveSubscription` (or `planExists`, or either `COUNT(*)` scan) by adding
 a dead `if !found` branch.
+
+## `GET /v1/subscriptions?search=`: the LIKE escaping never escaped the backslash
+
+**Observed behavior:** a search term containing a backslash returned the wrong
+result set, silently. `search=a\b` matched every username containing `ab` and
+never matched the username `a\b` itself.
+
+**Root cause:** `ListSubscriptions` (`internal/qmsapi/db/subscriptions_goqu.go`)
+escaped two of PostgreSQL's three LIKE metacharacters and not the third:
+
+```go
+// The LIKE metacharacters are escaped so that a search term containing one matches it literally.
+search := strings.ReplaceAll(params.Search, "%", `\%`)
+search = strings.ReplaceAll(search, "_", `\_`)
+```
+
+The backslash *is* the escape character — it is PostgreSQL's default for
+`LIKE`, with no `ESCAPE` clause in play — so it is as much a metacharacter as
+`%` and `_`. Left unescaped it stays live in the pattern: `%a\b%` reaches
+PostgreSQL as "an `a`, then an escaped `b`", the escape is consumed, and the
+pattern degrades to `%ab%`. The failure is silent in both directions — a
+larger, unrelated result set for the caller, and no way to match a username
+that genuinely contains a backslash.
+
+This is **pre-existing**, byte-identical to the GORM original, so it is a real
+bug fix rather than a regression introduced by the conversion. The comment
+above it was wrong too, claiming the escaping makes a metacharacter "match it
+literally" while omitting the one it forgot.
+
+**FIXED on `goqu-deferred-fixes`.** The backslash is escaped, **first**:
+
+```go
+search := strings.ReplaceAll(params.Search, `\`, `\\`)
+search = strings.ReplaceAll(search, "%", `\%`)
+search = strings.ReplaceAll(search, "_", `\_`)
+```
+
+**The order is load-bearing, not stylistic.** Escaping the backslash last
+would also double the backslashes the `%` and `_` passes had just introduced,
+turning each `\%` back into a literal backslash followed by a live wildcard.
+Verified rather than assumed: with the backslash pass moved to the end,
+`search=a%b` returns the user named `a\b` — the exact inversion the ordering
+prevents. Escaping the escape character first is the standard rule, and it is
+the reason the percent-sign assertion below exists at all.
+
+Note this is a *pattern*-level escape, independent of the
+`standard_conforming_strings` hazard recorded above: since this branch turned
+on `goqu.SetDefaultPrepared(true)`, the search term is a bind parameter, so
+PostgreSQL's `LIKE` receives exactly the bytes assembled here and no
+string-literal escape pass sits between them.
+
+**No golden moved.** `subscriptions_list.json` covers the listing, but its
+fixture has no metacharacters in any username, so it cannot distinguish the
+two behaviors. Covered instead by
+`TestSubscriptionSearchEscapesLikeMetacharacters`
+(`apitest/qms_subscriptions_test.go`), which subscribes users named `a\b`,
+`a%b` and `ab` and asserts each search matches exactly the one username that
+contains the term literally. Against the pre-fix code the backslash case fails
+with `matched username = "ab"`; against a wrongly-ordered fix the percent case
+fails with `matched username = "a\b"`.
