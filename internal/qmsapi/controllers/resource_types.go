@@ -198,11 +198,11 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 
 		log.Debug("verified that the resource type exists")
 
-		// Verify that a different resource type with the new name doesn't exist already. A failed lookup is reported as
-		// a conflict rather than a server error; that is carried over from the GORM implementation deliberately.
+		// Verify that a different resource type with the new name doesn't exist already. Absence is the success path
+		// here, so only a real collision is a conflict; a failed lookup is a server error.
 		homonym, err := qmsdb.GetResourceTypeByName(context, tx, inboundResourceType.Name)
 		if err != nil && !errors.Is(err, qmsdb.ErrNotFound) {
-			return txError(ctx, err.Error(), http.StatusConflict)
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		} else if err == nil && *homonym.ID != *existingResourceType.ID {
 			msg := fmt.Sprintf("a resource type with the given name already exists: %s", inboundResourceType.Name)
 			return txError(ctx, msg, http.StatusConflict)

@@ -686,6 +686,29 @@ conflict, and every other error still yields the same 409 it did before. Do not
 "fix" the status code while converting; it is current behavior, and repairing it
 belongs in a follow-up change outside this branch.
 
+**FIXED on `goqu-deferred-fixes`.** The `err != nil && !errors.Is(err,
+qmsdb.ErrNotFound)` branch in `UpdateResourceType`
+(`internal/qmsapi/controllers/resource_types.go`) now returns
+`http.StatusInternalServerError`. The not-found case is untouched — absence
+still means "no homonym" and falls through to the update — and a real name
+collision still returns 409 from the branch below it.
+
+**It is exercised now.** `TestUpdateResourceTypeReportsAFailedHomonymLookup`
+(`apitest/qms_resource_types_test.go`) reaches the path through the HTTP
+surface, which requires the homonym lookup to fail while the
+`GetResourceTypeByID` three lines above it succeeds. The failure is therefore
+injected into the one row the homonym query reads rather than into the table or
+the connection: `resource_types.consumable` is nullable (migration
+`000013_multiyear_subscriptions.up.sql:9` adds it with a default and no NOT
+NULL) while `model.ResourceType.Consumable` is a plain `bool`, so a row
+inserted with `consumable = NULL` fails `ScanStruct` with
+`couldn't convert <nil> into type bool`. The test names that row as the new
+name and updates `cpu.hours`, so the ID lookup reads a healthy row and only the
+name lookup breaks. It was observed failing at 409 before the change — a real
+red-green cycle — and it also asserts that `cpu.hours` still has its name
+afterwards, since the transaction has to roll back either way. No golden moved;
+none covers this path in either direction.
+
 ## Converted read handlers now open a transaction, which changes the body of a database-down 500
 
 `ListResourceTypes`, `AddResourceType`, and `GetResourceTypeDetails` ran their
