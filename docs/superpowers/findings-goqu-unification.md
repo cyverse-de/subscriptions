@@ -112,6 +112,40 @@ have one row), so it would ship silently. The single-row goldens plus the
 in-Go multi-row count/membership assertions are a deliberate workaround for
 an untestable ordering, not an oversight to "fix" by sorting.
 
+**FIXED on `goqu-deferred-fixes`,** which is the follow-up the warning above
+was holding the change for. Both listings now sort:
+
+- `ListUsers` (`internal/qmsapi/db/user_goqu.go`) orders by `username`, which
+  is `UNIQUE` (`migrations/000001_users_table.up.sql:7`) and so is a total
+  order on its own. It is also the field the response identifies a user by —
+  `id` is a `uuid_generate_v1()` that means nothing to a caller.
+- `ListUpdatesForUser` (`internal/qmsapi/db/updates_goqu.go`) orders by
+  `updates.effective_date` ascending, then `updates.id`. The table is an audit
+  trail, so chronological is the meaningful order; the identifier is there
+  because `effective_date` is not unique — `AddUsages` stamps it with
+  `time.Now()`, and two updates written in one request share an instant.
+
+**The two multi-row assertions were strengthened from membership to order,**
+which is the point of the fix and the reason they existed in that weakened
+form:
+
+- `TestListUsersReturnsEveryUserInOrder` (`apitest/qms_root_test.go`, renamed
+  from `TestListUsersReturnsEveryUser`) creates `carol`, `alice`, `bob` in that
+  order and asserts the response is `[alice bob carol]` — it no longer sorts
+  the usernames before comparing.
+- `TestListUsageUpdatesReturnsEveryUpdateInOrder`
+  (`apitest/qms_usage_updates_test.go`, renamed from
+  `TestListUsageUpdatesReturnsEveryUpdate`) records three updates and then
+  rewrites their effective dates so the expected order is neither the order
+  they were written in nor their order by value, then asserts the exact
+  sequence. Without that rewrite the assertion would pass against physical row
+  order and prove nothing.
+
+Both were observed failing with the `Order` clauses removed
+(`usernames = [carol alice bob]`, `update values = [10 5 7]`), so they discriminate
+on the ordering rather than describing it. Neither single-row golden moved, as
+expected: one row has only one order.
+
 ## `GET /summary/{user}`: every nested quota and usage has a blank `subscription_id`
 
 **Observed behavior:** in the response's `subscription.quotas[]` and

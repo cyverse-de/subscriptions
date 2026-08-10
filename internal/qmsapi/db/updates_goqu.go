@@ -83,8 +83,8 @@ func SaveUpdate(ctx context.Context, tx *goqu.TxDatabase, update *model.Update) 
 }
 
 // ListUpdatesForUser lists every update recorded for the given user, along with the resource type and user each one
-// refers to. The listing is deliberately unordered: the query it replaces had no ORDER BY, so adding one here would
-// change the order GET /v1/usages/{username}/updates returns its rows in.
+// refers to, oldest first. The updates table is an audit trail, so effective date is the order it is read in; the
+// identifier breaks ties, because two updates recorded in the same request carry the same date.
 func ListUpdatesForUser(ctx context.Context, tx *goqu.TxDatabase, username string) ([]model.Update, error) {
 	wrapMsg := fmt.Sprintf("unable to list the updates for user '%s'", username)
 
@@ -95,6 +95,7 @@ func ListUpdatesForUser(ctx context.Context, tx *goqu.TxDatabase, username strin
 		Select(updateColumns...).
 		Join(t.Users, goqu.On(t.Updates.Col("user_id").Eq(t.Users.Col("id")))).
 		Where(t.Users.Col("username").Eq(username)).
+		Order(t.Updates.Col("effective_date").Asc(), t.Updates.Col("id").Asc()).
 		Executor().
 		ScanStructsContext(ctx, &updates)
 	if err != nil {
