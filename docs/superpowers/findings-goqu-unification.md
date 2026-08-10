@@ -336,19 +336,35 @@ discards the rollback result entirely — `tx.Rollback()` is called for effect i
 a deferred block and its error is never assigned to the named return — so the
 callback's error always survives.
 
-**Why it is nonetheless safe to share `txAbort` between the two:** the
-divergence is unobservable over HTTP. `txAbort` is only ever constructed by
-`txError` (`root.go:33`), which builds it from `model.Error`, and `model.Error`
+**Why it is nonetheless safe to share `txAbort` between the two — but only on
+the `txAbort` path:** `txAbort` is only ever constructed by `txError`
+(`root.go:33`), which builds it from `model.Error`, and `model.Error`
 (`internal/qmsapi/model/root.go:62`) has already written the response body via
-`ctx.JSON` by the time the wrapper sees anything. So on this path the response
+`ctx.JSON` by the time the wrapper sees anything. So on that path the response
 is committed, and `App.New`'s custom `HTTPErrorHandler` (`app/app.go:48-55`)
 returns early whenever `c.Response().Committed` is true. Under GORM the helper
 returns `abort.response` (normally `nil`, since `ctx.JSON` succeeded) and echo
 does nothing; under goqu the helper returns the rollback error and echo's
 handler drops it on the `Committed` check. Same bytes on the wire either way.
-The remaining difference is that a failed rollback is silent under GORM and
-merely unlogged-but-returned under goqu — and a `Rollback` that fails means the
-connection is already broken, which the pool discovers independently.
+
+**On the ordinary-error path the divergence *is* observable**, and the claim
+should not be overstated: a callback that returns a plain error has written no
+response, so `Committed` is false and echo's handler falls through to its
+`default` branch (`app/app.go:70-74`), rendering
+`common.NewErrorResponse(err)`. If the ROLLBACK then fails, goqu substitutes the
+rollback error and the client gets that message instead of the handler's real
+one — the same 500 status, different body text. Nothing in the golden set
+covers it (it needs a failing ROLLBACK), so it is a latent message-fidelity
+difference, not a status-code difference.
+
+Nor is a failed `Rollback` proof of a broken connection: `database/sql` returns
+`sql.ErrTxDone` whenever the transaction was already committed or rolled back,
+on a perfectly healthy connection. The goqu layer already commits and rolls
+back caller-supplied transactions under `WithTXRollbackCommit`
+(`db/db.go:137-143`; the `doRollback`/`doCommit` blocks that act on it are at
+`db/addons.go:408`, `:441`, `:477`, `:514`), so a converted call that routes
+through one of those can reach the wrapper with the transaction already
+finished and get `ErrTxDone` rather than a dead socket.
 
 **Panic and commit paths do agree**, which is worth stating explicitly since
 they are the paths a reviewer is most likely to worry about: both wrappers roll
@@ -361,23 +377,124 @@ when the callback succeeded but COMMIT failed.
 error in a closure variable and preferring it over `Wrap`'s return, and do not
 write a goqu-flavored copy of `txAbort`/`txError`. The first would put
 `goquTransaction` out of step with the rest of the goqu layer, which drives
-transactions with a bare `tx.Wrap` (`app/app.go`'s `addUserUpdate`, `:286`);
+transactions with a bare `tx.Wrap` (`app/app.go`'s `addUserUpdate`, `:287`);
 the second would fork the contract the whole migration depends on. Both would
-be doing it to fix something with no observable effect. The single shared
+be doing it to fix what is at worst a 500-body message. The single shared
 `txAbort` is what makes a handler moved from `transaction` to
 `goquTransaction` behave identically; keep it single.
 
-**One genuine non-equivalence to respect while converting:** GORM's
-`Transaction` detects that it is already inside a transaction and nests with a
-`SAVEPOINT` (`finisher_api.go:640-654`), whereas `goquTransaction` always calls
-`Begin()` and would therefore open a *second, independent* transaction — which
-can block on the first one's locks rather than nesting inside it. This is safe
-today because all ten `s.transaction` call sites are a top-level `return` from
-their handler (`plans.go:131`, `:204`, `:261`, `:327`, `:439`;
-`resource_types.go:182`; `users.go:65`, `:139`, `:208`, `:305`) and none is
-reached from inside another transaction callback. Converting them one group at
-a time preserves that only as long as no conversion introduces a nested call;
-thread the existing `tx` down instead of opening a new one.
+### Convert each handler whole: never let one request hold both a GORM and a goqu transaction
+
+This is the one genuine non-equivalence, and the per-entity migration in Tasks
+11-14 walks straight into it.
+
+GORM's `Transaction` detects that it is already inside a transaction and nests
+with a `SAVEPOINT` (`finisher_api.go:640-654`). `goquTransaction` always calls
+`Begin()`, so it can only ever open a *new* transaction. The dangerous shape is
+not `goquTransaction` inside `goquTransaction` — it is a **partially converted
+handler**: code still running inside a GORM `transaction` callback that calls a
+newly-converted goqu query, or the reverse. In that mixed case the obvious
+remedy is unavailable, because the two transaction handles are not
+interconvertible: a `*gorm.DB` transaction cannot be threaded into a goqu
+query, and a `*goqu.TxDatabase` cannot be threaded into a GORM one.
+
+**The failure mode is a hang, not an error.** Both transactions come from the
+same `*sql.DB` pool, so they sit on different connections. If they touch the
+same rows, the second blocks on the first's locks while the goroutine holding
+the first is blocked waiting for the second to return — a self-deadlock that
+resolves only when a lock or statement timeout fires. It produces no error a
+test can assert on and no response diff, so **the golden-file gate cannot catch
+it.** This is the one Phase 2 hazard that passes CI and fails in production.
+
+**The rule:** convert a handler and everything it calls in a single change. No
+request may hold a GORM transaction and a goqu transaction at the same time. If
+a handler is too large to convert at once, convert its *queries* to goqu only
+after its transaction has been converted, never before.
+
+**All fifteen `/v1` transaction-opening sites** must be converted — the ten that
+go through the helper, plus five that call `s.GORMDB.Transaction(...)` directly
+and so are invisible to a search for `s.transaction`:
+
+- via `s.transaction` (10): `plans.go:131`, `:204`, `:261`, `:327`, `:439`;
+  `resource_types.go:182`; `users.go:65`, `:139`, `:208`, `:305`
+- raw `s.GORMDB.Transaction` (5): `subscriptions.go:232`, `:316`;
+  `usages.go:78`, `:223`; `users.go:413`
+
+**None of the fifteen is nested today**, which is what makes a staged migration
+possible at all — but the property is easy to destroy and worth re-checking
+after each conversion. The two that look nested are not:
+`subscriptions.go:232` is indented because it sits in a `for` loop over
+`body.Subscriptions`, and the `SubscriptionAdder.AddSubscription` it calls
+takes the `tx` it is handed (`subscriptions.go:81`) rather than opening its
+own; and `usages.go:78`'s `addUsage` is reached from `AddUsages`
+(`usages.go:177`), which is a plain handler body, not a transaction callback.
+
+## Four not-found conventions coexist: `qmsdb.ErrNotFound` only replaces one of them
+
+`qmsdb.ErrNotFound` (`internal/qmsapi/db/errors.go`) was added to replace
+`gorm.ErrRecordNotFound` as the 404-versus-500 signal. It replaces **that one
+convention only**, and the repo has three others that `errors.Is(err,
+qmsdb.ErrNotFound)` will not match. A converted query that surfaces one of them
+produces a silent 500 where a 404 is owed — exactly the bug the sentinel exists
+to prevent, reintroduced by a different route.
+
+The four, and who answers to each:
+
+1. **`gorm.ErrRecordNotFound`** — what `qmsdb.ErrNotFound` replaces. Live sites:
+   `internal/qmsapi/db/plan.go:34`, `:102`; `db/resource_types.go:20`, `:36`;
+   `db/user.go:39`; `db/subscriptions.go:195`, `:197`;
+   `controllers/resource_types.go:128`; `controllers/usages.go:105`.
+2. **`suberrors.Err*NotFound`** (top-level `errors` package):
+   `ErrUserNotFound` (`errors/errors.go:14`), `ErrAddonNotFound` (`:24`),
+   `ErrSubAddonNotFound` (`:25`). The **goqu layer already returns these
+   today** — `db/addons.go:302`, `:372`, `:506`. Any Task 11-14 query that
+   reuses a top-level `db` helper inherits them.
+3. **A second, unrelated `ErrUserNotFound` local to `controllers`**
+   (`usages.go:27`). This is a *different value* from `suberrors.ErrUserNotFound`
+   despite carrying the identical message string `"user name not found"`, so the
+   two are indistinguishable in a log and non-interchangeable under `errors.Is`.
+   It is the one `httpStatusCode` (`usages.go:37-49`) actually matches to return
+   404; the `suberrors` twin would fall through to the `default` 500.
+4. **`sql.ErrNoRows`** — what goqu over sqlx will actually raise once converted.
+
+**The rule for Tasks 11-14:** translate to `qmsdb.ErrNotFound` **inside the
+`internal/qmsapi/db` query functions themselves**, at the point where
+`sql.ErrNoRows` is first observed — never in a handler. Handlers should keep
+matching one sentinel. A handler that starts sniffing for `sql.ErrNoRows`, or
+that matches whichever of the two `ErrUserNotFound` values happens to be in
+scope, is how convention 3's trap gets re-sprung.
+
+**Related hazard while converting:** most existing not-found checks compare with
+`==`, not `errors.Is` (`plan.go:34`, `:102`; `resource_types.go:20`, `:36`;
+`user.go:39`; `subscriptions.go:195`, `:197`; `usages.go:105` — only
+`controllers/resource_types.go:128` uses `errors.Is`). `==` happens to work
+against GORM because GORM returns the bare sentinel, but it breaks the moment a
+converted query wraps its error with `%w`. Use `errors.Is` in converted code,
+per `CLAUDE.md`.
+
+## `goquTransaction` starts its transaction without a context
+
+`db.Database` exposes only `Begin()` (`db/db.go:47`) — it never surfaces goqu's
+`BeginTx(ctx, opts)` — and `Wrap` issues its COMMIT/ROLLBACK without a context
+either. So `goquTransaction` cannot carry the request context on the
+transaction itself.
+
+**This is parity with the GORM helper, not a regression:** `transaction` calls
+`s.GORMDB.Transaction(fn)` with no context either. It is called out because
+`CLAUDE.md` asks for context on transaction-starting calls, and a reader
+comparing the two helpers will notice the gap and may try to "fix" it mid-
+migration.
+
+**What Tasks 11-14 must do:** keep threading the request context *per query*,
+which is how the GORM callbacks do it today (`plans.go:159` uses
+`tx.WithContext(context)`; `internal/qmsapi/db/user.go:18` likewise). In goqu
+that means using the `*Context` variants on the transaction — `ScanStructContext`,
+`ScanStructsContext`, `ScanValContext`, `ExecContext` — rather than their
+context-free siblings. Reaching for the bare variants because `Wrap` took no
+context would silently drop per-query cancellation that the GORM code had.
+Giving `db.Database` a `BeginTx` is a reasonable follow-up, but it is a change
+to the shared goqu layer used by the non-`/v1` routes, so it does not belong in
+a per-entity conversion task.
 
 ## Golden-vs-`/v1`-counterpart comparison for the six retained goqu duplicates
 
