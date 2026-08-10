@@ -8,7 +8,7 @@
     "name": "Basic",
     "plan_quota_defaults": [
       {
-        "effective_date": null,
+        "effective_date": "<timestamp>",
         "quota_value": 200,
         "resource_type": {
           "consumable": true,
@@ -19,7 +19,7 @@
         "uuid": "<uuid>"
       },
       {
-        "effective_date": null,
+        "effective_date": "<timestamp>",
         "quota_value": 5368709120,
         "resource_type": {
           "consumable": false,
@@ -30,7 +30,13 @@
         "uuid": "<uuid>"
       }
     ],
-    "plan_rates": null,
+    "plan_rates": [
+      {
+        "effective_date": "<timestamp>",
+        "rate": 0,
+        "uuid": "<uuid>"
+      }
+    ],
     "uuid": "99e47c22-950a-11ec-84a4-406c8f3e9cbb"
   }
 }

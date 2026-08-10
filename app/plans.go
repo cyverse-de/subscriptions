@@ -140,27 +140,7 @@ func (a *App) getPlan(ctx context.Context, request *qms.PlanRequest) *qms.PlanRe
 		return response
 	}
 
-	response.Plan = &qms.Plan{
-		Uuid:              plan.ID,
-		Name:              plan.Name,
-		Description:       plan.Description,
-		PlanQuotaDefaults: []*qms.QuotaDefault{},
-	}
-
-	for _, q := range plan.QuotaDefaults {
-		response.Plan.PlanQuotaDefaults = append(
-			response.Plan.PlanQuotaDefaults,
-			&qms.QuotaDefault{
-				Uuid:       q.ID,
-				QuotaValue: q.QuotaValue,
-				ResourceType: &qms.ResourceType{
-					Uuid:       q.ResourceType.ID,
-					Name:       q.ResourceType.Name,
-					Unit:       q.ResourceType.Unit,
-					Consumable: q.ResourceType.Consumable,
-				},
-			})
-	}
+	response.Plan = plan.ToQMSPlan()
 
 	return response
 }

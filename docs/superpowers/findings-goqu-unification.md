@@ -280,6 +280,22 @@ collapses this route onto the `/v1` implementation, or that refactors
 visible behavior change for any caller that starts depending on this route
 and needs to know it's fixing something rather than breaking something.
 
+**FIXED on `goqu-deferred-fixes`,** by the refactor the paragraph above
+anticipates: `getPlan` (`app/plans.go`) now returns `plan.ToQMSPlan()`
+instead of hand-building the response, so the quota defaults come back
+through `ToQMSQuotaDefault` with their effective dates and the rates
+`loadPlanDetails` already fetched are carried across. `ToQMSPlan` itself is
+unchanged, so its other callers — `listPlans` and `addPlan` — are unaffected.
+The empty case still marshals as `[]` rather than `null`: `ToQMSPlan` builds
+both slices with `make(..., len)`, which the deleted code did with an
+initialized empty slice. A missing plan still panics on the nil `*Plan` that
+`GetPlanByID` returns, exactly as the hand-built version did; that is the
+separate `plan == nil` landmine recorded later in this document, deliberately
+left alone here.
+
+Golden that moved: `apitest/testdata/goqu_plan_get.json`, whose `plan` object
+is now byte-identical to the Basic entry in `goqu_plans_list.json`.
+
 ## `PUT /users/{username}/usages`: the response drops the row's identity and audit fields
 
 **Observed behavior:** `apitest/testdata/goqu_usage_added.json` shows the
