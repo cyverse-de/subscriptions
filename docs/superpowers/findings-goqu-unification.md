@@ -179,6 +179,34 @@ this branch's plan, so nobody translating a GORM query to goqu will pass
 through this code and rediscover it. Recording it here is the only way the
 knowledge survives past this task.
 
+**FIXED on `goqu-deferred-fixes`**, both halves separately, as the two
+different causes require:
+
+- **Usage:** `Usage.ToQMSUsage()` (`db/types.go`) now copies
+  `u.SubscriptionID` into `qms.Usage.SubscriptionId`. No query changed; the
+  column was already selected.
+- **Quota:** `db.Quota` gained a scalar `SubscriptionID string` field tagged
+  `db:"subscription_id"`, `SubscriptionQuotas` (`db/userplans.go`)
+  now selects `quotas.subscription_id` into it, and `Quota.ToQMSQuota()`
+  copies it across. `LoadQuotaDetails` (`db/quotas.go`), the only other query
+  that scans a `db.Quota`, selects the column too, so the new field is never
+  half-populated depending on which query filled the struct.
+
+The value is provably the right subscription rather than merely non-empty:
+both queries filter on `subscription_id = <the subscription being
+summarized>`, so the column can only hold that ID. Goldens that moved:
+`apitest/testdata/summary_basic.json` (two quotas and one usage) and
+`apitest/testdata/summary_unknown_user.json` (two quotas; the auto-created
+subscription has no usage rows yet).
+
+`ToQMSQuota`'s other caller is `addQuota` (`app/quotas.go`), the `PUT
+/quotas` handler, whose golden did not move — that route still fails with the
+500 recorded in the next section, so its response carries `"quota": null` and
+has no field to populate. `ToQMSUsage`'s only caller is `ToQMSSubscription`,
+whose only caller is `GET /summary/{user}`. `GET /users/{username}/usages`
+builds its own `qms.Usage` literals and already set `SubscriptionId`, so it
+is unaffected.
+
 ## `PUT /quotas`: a resource type identified only by name produces a 500
 
 **Observed behavior:** the request body shape the wire contract documents —
