@@ -234,11 +234,17 @@ summarized>`, so the column can only hold that ID. Goldens that moved:
 subscription has no usage rows yet).
 
 `ToQMSQuota`'s other caller is `addQuota` (`app/quotas.go`), the `PUT /quotas`
-handler, whose golden did not move for this change — that route still failed
-with the 500 recorded in the next section at the time, so its response carried
-`"quota": null` and had no field to populate. The fix recorded in that section
-makes the route succeed, and `goqu_quota_added.json` now shows the populated
-`subscription_id` this change is about. `ToQMSUsage`'s only caller is `ToQMSSubscription`,
+handler. At the moment this commit landed, its golden did not move: that
+route still failed with the 500 recorded in the next section, so its response
+carried `"quota": null` and had no field to populate, making the
+`quotas.subscription_id` this commit added to `LoadQuotaDetails`'s select
+look like unexercised defensive scope creep. That is stale at this branch's
+tip — the fix recorded in the next section makes `PUT /quotas` succeed, and
+that same `SELECT` line is now what puts a real UUID into
+`apitest/testdata/goqu_quota_added.json`'s `subscription_id`. Removing the
+line makes `TestGoquAddQuota` fail with `"subscription_id": ""` where the
+golden expects a uuid, confirming the line is load-bearing at the tip, not
+merely defensive. `ToQMSUsage`'s only caller is `ToQMSSubscription`,
 whose only caller is `GET /summary/{user}`. `GET /users/{username}/usages`
 builds its own `qms.Usage` literals and already set `SubscriptionId`, so it
 is unaffected.

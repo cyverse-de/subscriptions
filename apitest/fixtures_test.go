@@ -110,11 +110,15 @@ func updateBody(resourceName, unit, operation string, value float64) string {
 // reads the row fails the scan. It is the only handle this suite has on the
 // error path of a resource type lookup: resource_types has no other nullable
 // column, and the alternatives (dropping a column, revoking a privilege,
-// closing the pool) break every other query in the same request too. The row is
-// removed when the test ends, taking anything referencing it with it through
-// the ON DELETE CASCADE on resource_type_id.
+// closing the pool) break every other query in the same request too. The row
+// is removed when the test ends, taking anything referencing it with it
+// through the ON DELETE CASCADE on resource_type_id; even a hard crash can't
+// leak it across runs, since TestMain starts a fresh postgres:17 testcontainer
+// per run and terminates it afterward.
 func unscannableResourceType(t *testing.T, name string) {
 	t.Helper()
+	// Register the delete before inserting, not after, so a test that fails
+	// partway through still cleans up the row.
 	cleanupResourceType(t, name)
 	if _, err := testDB.Exec(
 		`INSERT INTO resource_types (name, unit, consumable) VALUES ($1, 'broken', NULL)`, name,
