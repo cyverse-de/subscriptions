@@ -172,3 +172,16 @@ func TestBulkSubscriptionEndpoints(t *testing.T) {
 		assertGolden(t, "subscriptions_list_empty", got, http.StatusOK)
 	})
 }
+
+// createUser checks only the status of PUT /v1/users/{username}; this pins the
+// response body, which terrain sees when it subscribes a user indirectly.
+func TestAddUserResponse(t *testing.T) {
+	resetDB(t)
+	assertGolden(t, "v1_user_added",
+		do(t, http.MethodPut, "/v1/users/"+testUser, ""), http.StatusOK)
+
+	stored := queryInt(t, `SELECT count(*) FROM users WHERE username = $1`, trimmedUser)
+	if stored != 1 {
+		t.Errorf("users rows = %d, want 1", stored)
+	}
+}
