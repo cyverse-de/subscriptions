@@ -6,11 +6,11 @@ import (
 	"net/http"
 
 	"github.com/cyverse-de/echo-middleware/v2/params"
-	"github.com/cyverse-de/subscriptions/internal/qmsapi/db"
+	qmsdb "github.com/cyverse-de/subscriptions/internal/qmsapi/db"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
+	"github.com/doug-martin/goqu/v9"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
-	"gorm.io/gorm"
 )
 
 // extractResourceTypeID extracts and validates the resource type ID path parameter.
@@ -34,19 +34,20 @@ func extractResourceTypeID(ctx echo.Context) (string, error) {
 
 // ListResourceTypes is the handler for the GET /v1/resource-types and GET /v1/resource-types endpoints.
 func (s Server) ListResourceTypes(ctx echo.Context) error {
-	var data []model.ResourceType
+	context := ctx.Request().Context()
 
 	log := log.WithFields(logrus.Fields{"context": "listing resource types"})
 
-	err := s.GORMDB.Find(&data).Error
-	if err != nil {
-		msg := fmt.Sprintf("unable to list resource types: %s", err)
-		return model.Error(ctx, msg, http.StatusInternalServerError)
-	}
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
+		resourceTypes, err := qmsdb.ListResourceTypes(context, tx)
+		if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
+		}
 
-	log.Debug("found resource types to return")
+		log.Debug("found resource types to return")
 
-	return model.Success(ctx, data, http.StatusOK)
+		return model.Success(ctx, resourceTypes.ResourceTypes, http.StatusOK)
+	})
 }
 
 // swagger:route POST /v1/resource-types resource-types addResourceType
@@ -85,14 +86,16 @@ func (s Server) AddResourceType(ctx echo.Context) error {
 	resourceType.ID = nil
 
 	// Save the resource type.
-	populatedResourceType, err := db.SaveResourceType(context, s.GORMDB, resourceType)
-	if err == db.ErrResourceTypeConflict {
-		return model.Error(ctx, err.Error(), http.StatusConflict)
-	} else if err != nil {
-		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
-	}
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
+		populatedResourceType, err := qmsdb.SaveResourceType(context, tx, resourceType)
+		if errors.Is(err, qmsdb.ErrResourceTypeConflict) {
+			return txError(ctx, err.Error(), http.StatusConflict)
+		} else if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
+		}
 
-	return model.Success(ctx, populatedResourceType, http.StatusOK)
+		return model.Success(ctx, populatedResourceType, http.StatusOK)
+	})
 }
 
 // swagger:route GET /v1/resource-types/{resource_type_id} resource-types getResourceTypeDetails
@@ -109,6 +112,7 @@ func (s Server) AddResourceType(ctx echo.Context) error {
 
 // GetResourceTypeDetails is the handler for the GET /v1/resource-types/{resource_type_id} endpoint.
 func (s Server) GetResourceTypeDetails(ctx echo.Context) error {
+	context := ctx.Request().Context()
 	var err error
 
 	log := log.WithFields(logrus.Fields{"context": "getting resource type details"})
@@ -123,19 +127,20 @@ func (s Server) GetResourceTypeDetails(ctx echo.Context) error {
 	log.Debugf("extracted resource type ID %s", resourceTypeID)
 
 	// Look up the resource type.
-	resourceType := model.ResourceType{ID: &resourceTypeID}
-	err = s.GORMDB.Take(&resourceType).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		msg := fmt.Sprintf("resource type not found: %s", resourceTypeID)
-		return model.Error(ctx, msg, http.StatusNotFound)
-	} else if err != nil {
-		msg := fmt.Sprintf("unable to look up the resource type: %s", err)
-		return model.Error(ctx, msg, http.StatusInternalServerError)
-	}
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
+		resourceType, err := qmsdb.GetResourceTypeByID(context, tx, resourceTypeID)
+		if errors.Is(err, qmsdb.ErrNotFound) {
+			msg := fmt.Sprintf("resource type not found: %s", resourceTypeID)
+			return txError(ctx, msg, http.StatusNotFound)
+		} else if err != nil {
+			msg := fmt.Sprintf("unable to look up the resource type: %s", err)
+			return txError(ctx, msg, http.StatusInternalServerError)
+		}
 
-	log.Debug("found resource type information to return")
+		log.Debug("found resource type information to return")
 
-	return model.Success(ctx, &resourceType, http.StatusOK)
+		return model.Success(ctx, resourceType, http.StatusOK)
+	})
 }
 
 // swagger:route PUT /v1/resource-types/{resource_type_id} resource-types updateResourceType
@@ -179,27 +184,26 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 	log.Debug("extracted and validated the request body")
 
 	// Perform these steps in a transaction to ensure consistency.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		var err error
 
 		// Verify that the resource type exists.
-		existingResourceType, err := db.GetResourceTypeByID(context, tx, resourceTypeID)
-		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
-		} else if existingResourceType == nil {
+		existingResourceType, err := qmsdb.GetResourceTypeByID(context, tx, resourceTypeID)
+		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("resource type not found: %s", resourceTypeID)
 			return txError(ctx, msg, http.StatusNotFound)
+		} else if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		log.Debug("verified that the resource type exists")
 
-		// Verify that a different resource type with the new name doesn't exist already.
-		homonym, err := db.GetResourceTypeByName(context, tx, inboundResourceType.Name)
-		if err != nil {
+		// Verify that a different resource type with the new name doesn't exist already. A failed lookup is reported as
+		// a conflict rather than a server error; that is carried over from the GORM implementation deliberately.
+		homonym, err := qmsdb.GetResourceTypeByName(context, tx, inboundResourceType.Name)
+		if err != nil && !errors.Is(err, qmsdb.ErrNotFound) {
 			return txError(ctx, err.Error(), http.StatusConflict)
-		} else if homonym != nil && *homonym.ID != *existingResourceType.ID {
-			fmt.Printf("existing: %+v\n", existingResourceType)
-			fmt.Printf("homonym: %+v\n", homonym)
+		} else if err == nil && *homonym.ID != *existingResourceType.ID {
 			msg := fmt.Sprintf("a resource type with the given name already exists: %s", inboundResourceType.Name)
 			return txError(ctx, msg, http.StatusConflict)
 		}
@@ -208,7 +212,7 @@ func (s Server) UpdateResourceType(ctx echo.Context) error {
 		existingResourceType.Name = inboundResourceType.Name
 		existingResourceType.Unit = inboundResourceType.Unit
 		existingResourceType.Consumable = inboundResourceType.Consumable
-		err = db.UpdateResourceType(context, tx, *existingResourceType)
+		err = qmsdb.UpdateResourceType(context, tx, *existingResourceType)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}

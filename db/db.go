@@ -1,6 +1,9 @@
 package db
 
 import (
+	"context"
+	"database/sql"
+
 	"github.com/cyverse-de/go-mod/logging"
 	"github.com/doug-martin/goqu/v9"
 	"github.com/sirupsen/logrus"
@@ -11,16 +14,17 @@ import (
 var log = logging.Log.WithFields(logrus.Fields{"package": "db"})
 
 type Database struct {
-	db     *sqlx.DB
 	fullDB *goqu.Database
 	goquDB GoquDatabase
 	logSQL bool
 }
 
 func New(dbconn *sqlx.DB) *Database {
-	goquDB := goqu.New("postgresql", dbconn)
+	// "postgres" is the name goqu/v9/dialect/postgres registers itself under.
+	// An unrecognized name silently falls back to goqu's default dialect, whose
+	// placeholder is "?" rather than "$1".
+	goquDB := goqu.New("postgres", dbconn)
 	return &Database{
-		db:     dbconn, // Used when a method needs direct access to sqlx for struct scanning.
 		fullDB: goquDB, // Used when a method needs to use a method not defined in the GoquDatabase interface.
 		goquDB: goquDB, // Used when a method needs to optionally support being run inside a transaction.
 		logSQL: false,  // Set to true to log SQL statements. TODO: implement for all statements.
@@ -35,17 +39,30 @@ func (d *Database) EnableSQLLogging() {
 // LogSQL logs an SQL statement that is being executed if debugging is enabled.
 func (d *Database) LogSQL(statement SQLStatement) {
 	if d.logSQL {
-		sql, args, err := statement.ToSQL()
-		if err != nil {
-			log.Errorf("unable to generate the SQL: %s", err)
-			return
-		}
-		log.Infof("%s %v", sql, args)
+		logStatement(statement)
 	}
+}
+
+// logStatement logs a statement alongside its bound parameters. Both are needed
+// to reconstruct what ran: queries are prepared, so the SQL text carries
+// placeholders rather than the values they stand for.
+func logStatement(statement SQLStatement) {
+	sql, args, err := statement.ToSQL()
+	if err != nil {
+		log.Errorf("unable to generate the SQL: %s", err)
+		return
+	}
+	log.Infof("%s %v", sql, args)
 }
 
 func (d *Database) Begin() (*goqu.TxDatabase, error) {
 	return d.fullDB.Begin()
+}
+
+// BeginTx starts a transaction that honors the given context. Unlike Begin, it gives up when the caller does rather
+// than waiting indefinitely for a free connection when the pool is saturated.
+func (d *Database) BeginTx(ctx context.Context, opts *sql.TxOptions) (*goqu.TxDatabase, error) {
+	return d.fullDB.BeginTx(ctx, opts)
 }
 
 func (d *Database) querySettings(opts ...QueryOption) (*QuerySettings, GoquDatabase) {

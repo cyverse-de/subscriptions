@@ -17,22 +17,22 @@ type UpdateOperation struct {
 	// The update operation ID
 	//
 	// readOnly: true
-	ID *string `gorm:"type:uuid;default:uuid_generate_v1()" json:"id"`
+	ID *string `db:"id" json:"id"`
 	// The update operation name
 	//
 	// required: true
-	Name string `gorm:"type:text;not null;unique" json:"name"`
+	Name string `db:"name" json:"name"`
 }
 
 type Update struct {
-	ID                *string      `gorm:"type:uuid;default:uuid_generate_v1()" json:"id"`
-	ValueType         string       `json:"value_type"`
-	Value             float64      `gorm:"not null" json:"value"`
-	EffectiveDate     time.Time    `gorm:"type:date;not null" json:"effective_date"`
-	UpdateOperationID *string      `gorm:"type:uuid;not null" json:"-"`
-	ResourceTypeID    *string      `gorm:"type:uuid;not null" json:"-"`
-	ResourceType      ResourceType `json:"resource_types"`
-	UserID            *string      `gorm:"type:uuid" json:"-"`
-	User              User         `json:"user"`
-	Metadata          *string      `json:"metadata"`
+	ID                *string      `db:"id" json:"id"`
+	ValueType         string       `db:"value_type" json:"value_type"`
+	Value             float64      `db:"value" json:"value"`
+	EffectiveDate     time.Time    `db:"effective_date" json:"effective_date"`
+	UpdateOperationID *string      `db:"update_operation_id" json:"-"`
+	ResourceTypeID    *string      `db:"resource_type_id" json:"-"`
+	ResourceType      ResourceType `db:"-" json:"resource_types"`
+	UserID            *string      `db:"user_id" json:"-"`
+	User              User         `db:"-" json:"user"`
+	Metadata          *string      `db:"metadata" json:"metadata"`
 }

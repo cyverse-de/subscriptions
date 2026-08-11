@@ -1,0 +1,11 @@
+{
+  "error": {
+    "error_code": "INTERNAL",
+    "message": "pq: invalid input syntax for type uuid: \"\"",
+    "status_code": 500
+  },
+  "header": {
+    "map": {}
+  },
+  "quota": null
+}

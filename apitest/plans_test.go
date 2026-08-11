@@ -12,7 +12,6 @@ import (
 func TestAddPlanQuotaDefaults(t *testing.T) {
 	resetDB(t)
 
-	const basicPlanID = "99e47c22-950a-11ec-84a4-406c8f3e9cbb"
 	const cpuHoursID = "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
 
 	// plan_quota_defaults is reference data seeded by the migrations, so

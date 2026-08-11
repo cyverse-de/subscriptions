@@ -1,16 +1,17 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/cyverse-de/echo-middleware/v2/params"
-	"github.com/cyverse-de/subscriptions/internal/qmsapi/db"
+	qmsdb "github.com/cyverse-de/subscriptions/internal/qmsapi/db"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/httpmodel"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
+	"github.com/doug-martin/goqu/v9"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
-	"gorm.io/gorm"
 )
 
 // extractPlanID extracts and validates the plan ID path parameter.
@@ -40,14 +41,16 @@ func (s Server) GetAllPlans(ctx echo.Context) error {
 
 	context := ctx.Request().Context()
 
-	plans, err := db.ListPlans(context, s.GORMDB)
-	if err != nil {
-		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
-	}
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
+		plans, err := qmsdb.ListPlans(context, tx)
+		if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
+		}
 
-	log.Debug("listing plans from the database")
+		log.Debug("listing plans from the database")
 
-	return model.Success(ctx, plans, http.StatusOK)
+		return model.Success(ctx, plans, http.StatusOK)
+	})
 }
 
 // GetPlanByID returns the plan with the given identifier.
@@ -80,18 +83,19 @@ func (s Server) GetPlanByID(ctx echo.Context) error {
 	log.Debug("extracted and validated then plan ID from request")
 
 	// Look up the plan.
-	plan, err := db.GetPlanByID(context, s.GORMDB, planID)
-	if err != nil {
-		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
-	}
-	if plan == nil {
-		msg := fmt.Sprintf("plan ID %s not found", planID)
-		return model.Error(ctx, msg, http.StatusNotFound)
-	}
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
+		plan, err := qmsdb.GetPlanByID(context, tx, planID)
+		if errors.Is(err, qmsdb.ErrNotFound) {
+			msg := fmt.Sprintf("plan ID %s not found", planID)
+			return txError(ctx, msg, http.StatusNotFound)
+		} else if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
+		}
 
-	log.Debug("successfully looked up plan to return")
+		log.Debug("successfully looked up plan to return")
 
-	return model.Success(ctx, plan, http.StatusOK)
+		return model.Success(ctx, plan, http.StatusOK)
+	})
 }
 
 // AddPlan adds a new plan to the database.
@@ -128,11 +132,11 @@ func (s Server) AddPlan(ctx echo.Context) error {
 	log.Debugf("adding a new plan to the database: %+v", plan)
 
 	// Begin a transaction.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		dbPlan := plan.ToDBModel()
 
 		// Make sure that a plan with the same name doesn't already exist.
-		planNameExists, err := db.CheckPlanNameExistence(context, tx, plan.Name)
+		planNameExists, err := qmsdb.CheckPlanNameExistence(context, tx, plan.Name)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		} else if planNameExists {
@@ -141,13 +145,12 @@ func (s Server) AddPlan(ctx echo.Context) error {
 
 		// Look up each resource type and update it in the struct.
 		for i, planQuotaDefault := range dbPlan.PlanQuotaDefaults {
-			resourceType, err := db.GetResourceTypeByName(context, tx, planQuotaDefault.ResourceType.Name)
-			if err != nil {
-				return txError(ctx, err.Error(), http.StatusInternalServerError)
-			}
-			if resourceType == nil {
+			resourceType, err := qmsdb.GetResourceTypeByName(context, tx, planQuotaDefault.ResourceType.Name)
+			if errors.Is(err, qmsdb.ErrNotFound) {
 				msg := fmt.Sprintf("resource type not found: %s", planQuotaDefault.ResourceType.Name)
 				return txError(ctx, msg, http.StatusBadRequest)
+			} else if err != nil {
+				return txError(ctx, err.Error(), http.StatusInternalServerError)
 			}
 			dbPlan.PlanQuotaDefaults[i].ResourceType = *resourceType
 
@@ -156,7 +159,7 @@ func (s Server) AddPlan(ctx echo.Context) error {
 		log.Debugf("translated plan: %+v", dbPlan)
 
 		// Add the plan to the database.
-		err = tx.WithContext(context).Create(&dbPlan).Error
+		err = qmsdb.SavePlan(context, tx, &dbPlan)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -201,11 +204,11 @@ func (s Server) GetActivePlanRate(ctx echo.Context) error {
 	log.Info("getting the active rate for a plan")
 
 	// Begin a transaction.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		context := ctx.Request().Context()
 
 		// Verify that the plan exists.
-		exists, err := db.CheckPlanExistence(context, tx, planID)
+		exists, err := qmsdb.CheckPlanExistence(context, tx, planID)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		} else if !exists {
@@ -214,7 +217,7 @@ func (s Server) GetActivePlanRate(ctx echo.Context) error {
 		}
 
 		// Look up the active plan rate.
-		activePlanRate, err := db.GetActivePlanRate(context, tx, planID)
+		activePlanRate, err := qmsdb.GetActivePlanRate(context, tx, planID)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -258,11 +261,11 @@ func (s Server) GetActiveQuotaDefaults(ctx echo.Context) error {
 	log.Info("getting active plan quota defaults for an existing plan")
 
 	// Begin a transaction.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		context := ctx.Request().Context()
 
 		// Verify that the plan exists.
-		exists, err := db.CheckPlanExistence(context, tx, planID)
+		exists, err := qmsdb.CheckPlanExistence(context, tx, planID)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		} else if !exists {
@@ -271,7 +274,7 @@ func (s Server) GetActiveQuotaDefaults(ctx echo.Context) error {
 		}
 
 		// Look up the active plan quota defaults.
-		activePlanQuotaDefaults, err := db.GetActivePlanQuotaDefaults(context, tx, planID)
+		activePlanQuotaDefaults, err := qmsdb.GetActivePlanQuotaDefaults(context, tx, planID)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -324,16 +327,16 @@ func (s Server) AddPlanQuotaDefaults(ctx echo.Context) error {
 	}
 
 	// Begin a transaction.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		context := ctx.Request().Context()
 
 		// Verify that the plan exists.
-		plan, err := db.GetPlanByID(context, tx, planID)
-		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
-		} else if plan == nil {
+		plan, err := qmsdb.GetPlanByID(context, tx, planID)
+		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("plan ID %s not found", planID)
 			return txError(ctx, msg, http.StatusNotFound)
+		} else if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Convert the request body to the equivalent database model and insert the plan ID into each object.
@@ -343,7 +346,7 @@ func (s Server) AddPlanQuotaDefaults(ctx echo.Context) error {
 		}
 
 		// Retireve the list of resource types from the database.
-		resourceTypeList, err := db.ListResourceTypes(context, tx)
+		resourceTypeList, err := qmsdb.ListResourceTypes(context, tx)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
@@ -376,18 +379,18 @@ func (s Server) AddPlanQuotaDefaults(ctx echo.Context) error {
 		}
 
 		// Save the list of plan quota defaults.
-		err = db.SavePlanQuotaDefaults(context, tx, planQuotaDefaults)
+		err = qmsdb.SavePlanQuotaDefaults(context, tx, planQuotaDefaults)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Look up the plan with the new plan quota defaults included and return it in the response.
-		plan, err = db.GetPlanByID(context, tx, planID)
-		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
-		} else if plan == nil {
+		plan, err = qmsdb.GetPlanByID(context, tx, planID)
+		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("plan ID %s not found after saving it", planID)
 			return txError(ctx, msg, http.StatusInternalServerError)
+		} else if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		return model.Success(ctx, plan, http.StatusOK)
 	})
@@ -436,16 +439,16 @@ func (s Server) AddPlanRates(ctx echo.Context) error {
 	}
 
 	// Begin a transaction.
-	return s.transaction(func(tx *gorm.DB) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		context := ctx.Request().Context()
 
 		// Verify that the plan existws.
-		plan, err := db.GetPlanByID(context, tx, planID)
-		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
-		} else if plan == nil {
+		plan, err := qmsdb.GetPlanByID(context, tx, planID)
+		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("plan ID %s not found", planID)
 			return txError(ctx, msg, http.StatusNotFound)
+		} else if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Convert the list of plan rates to the corresponding DB model.
@@ -469,18 +472,18 @@ func (s Server) AddPlanRates(ctx echo.Context) error {
 		}
 
 		// Save the list of plan rates.
-		err = db.SavePlanRates(context, tx, planRates)
+		err = qmsdb.SavePlanRates(context, tx, planRates)
 		if err != nil {
 			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 
 		// Look up the plan with the new plan quota defaults included and return it in the response.
-		plan, err = db.GetPlanByID(context, tx, planID)
-		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
-		} else if plan == nil {
+		plan, err = qmsdb.GetPlanByID(context, tx, planID)
+		if errors.Is(err, qmsdb.ErrNotFound) {
 			msg := fmt.Sprintf("plan ID %s not found after saving it", planID)
 			return txError(ctx, msg, http.StatusInternalServerError)
+		} else if err != nil {
+			return txError(ctx, err.Error(), http.StatusInternalServerError)
 		}
 		return model.Success(ctx, plan, http.StatusOK)
 	})

@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cyverse-de/subscriptions/internal/qmsapi/db"
+	qmsdb "github.com/cyverse-de/subscriptions/internal/qmsapi/db"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
+	"github.com/doug-martin/goqu/v9"
 	"github.com/labstack/echo/v4"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"gorm.io/gorm"
 )
 
 type Usage struct {
@@ -75,9 +75,9 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 		"value":      usage.UsageValue,
 	})
 
-	return s.GORMDB.Transaction(func(tx *gorm.DB) error {
+	return s.goquTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		// Look up the currently active user plan, adding a default plan if one doesn't exist already.
-		subscription, err := db.GetActiveSubscriptionDetails(ctx, tx, username)
+		subscription, err := qmsdb.GetActiveSubscriptionDetails(ctx, tx, username)
 		if err != nil {
 			return err
 		}
@@ -85,24 +85,18 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 		log.Debugf("active plan is %s", subscription.Plan.Name)
 
 		// Look up the resource type.
-		resourceType, err := db.GetResourceTypeByName(ctx, tx, usage.ResourceName)
+		resourceType, err := qmsdb.GetResourceTypeByName(ctx, tx, usage.ResourceName)
+		if errors.Is(err, qmsdb.ErrNotFound) {
+			return fmt.Errorf("resource type '%s' does not exist", usage.ResourceName)
+		}
 		if err != nil {
 			return err
-		}
-		if resourceType == nil {
-			return fmt.Errorf("resource type '%s' does not exist", usage.ResourceName)
 		}
 		log.Debug("found resource type in database")
 
 		// Verify that the update operation for the given update type exists.
-		// The name has to be an explicit condition: First only filters on the
-		// primary key, so setting Name on the destination struct matched
-		// whichever operation sorted first and recorded ADD for every update.
-		var updateOperation model.UpdateOperation
-		err = tx.WithContext(ctx).
-			Where("name = ?", usage.UpdateType).
-			First(&updateOperation).Error
-		if err == gorm.ErrRecordNotFound {
+		updateOperation, err := qmsdb.GetUpdateOperationByName(ctx, tx, usage.UpdateType)
+		if errors.Is(err, qmsdb.ErrNotFound) {
 			return fmt.Errorf("%w: %s", ErrInvalidUpdateType, usage.UpdateType)
 		}
 		if err != nil {
@@ -130,7 +124,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 			ResourceTypeID: resourceType.ID,
 			Usage:          newUsageValue,
 		}
-		err = db.UpsertUsage(ctx, tx, newUsage)
+		err = qmsdb.UpsertUsage(ctx, tx, newUsage)
 		if err != nil {
 			return errors.Wrap(err, "unable to update or insert the usage record")
 		}
@@ -146,7 +140,7 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 			UserID:            subscription.UserID,
 			Metadata:          &usage.Metadata,
 		}
-		err = tx.WithContext(ctx).Create(&update).Error
+		err = qmsdb.SaveUpdate(ctx, tx, &update)
 		if err != nil {
 			return err
 		}
@@ -186,23 +180,6 @@ func (s Server) AddUsages(ctx echo.Context) error {
 	return model.SuccessMessage(ctx, successMsg, http.StatusOK)
 }
 
-func (s Server) userUpdates(ctx context.Context, username string) ([]model.Update, error) {
-	var err error
-
-	updates := make([]model.Update, 0)
-	err = s.GORMDB.WithContext(ctx).
-		Table("updates").
-		Joins("JOIN users ON updates.user_id = users.id").
-		Preload("ResourceType").
-		Preload("User").
-		Where("users.username = ?", username).
-		Find(&updates).Error
-	if err != nil {
-		return nil, err
-	}
-	return updates, nil
-}
-
 func (s Server) GetAllUsageOfUser(ctx echo.Context) error {
 	var err error
 
@@ -220,8 +197,9 @@ func (s Server) GetAllUsageOfUser(ctx echo.Context) error {
 	// GetActiveSubscriptionDetails subscribes the user to the default plan when they have no active subscription, so
 	// this read path writes and needs a transaction of its own.
 	var subscription *model.Subscription
-	err = s.GORMDB.Transaction(func(tx *gorm.DB) error {
-		subscription, err = db.GetActiveSubscriptionDetails(context, tx, username)
+	err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
+		var err error
+		subscription, err = qmsdb.GetActiveSubscriptionDetails(context, tx, username)
 		return err
 	})
 	if err != nil {
@@ -252,7 +230,12 @@ func (s Server) GetAllUsageUpdatesForUser(ctx echo.Context) error {
 	}
 
 	context := ctx.Request().Context()
-	updates, err := s.userUpdates(context, username)
+	var updates []model.Update
+	err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
+		var err error
+		updates, err = qmsdb.ListUpdatesForUser(context, tx, username)
+		return err
+	})
 	if err != nil {
 		sCode := httpStatusCode(err)
 		log.Error(err)

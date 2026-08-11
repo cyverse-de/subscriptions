@@ -9,20 +9,20 @@ type Usage struct {
 	// The usage record identifier
 	//
 	// readOnly: true
-	ID *string `gorm:"type:uuid;default:uuid_generate_v1()" json:"id,omitempty"`
+	ID *string `db:"id" json:"id,omitempty"`
 
 	// The usage amount
-	Usage float64 `gorm:"not null" json:"usage"`
+	Usage float64 `db:"usage" json:"usage"`
 
 	// The subscription identifier
-	SubscriptionID *string `gorm:"type:uuid;not null;index:usage_subscription_resourcetype,unique" json:"-"`
+	SubscriptionID *string `db:"subscription_id" json:"-"`
 
 	// The resource type identifier
-	ResourceTypeID *string `gorm:"type:uuid;not null;index:usage_subscription_resourcetype,unique" json:"-"`
+	ResourceTypeID *string `db:"resource_type_id" json:"-"`
 
 	// The resource type associated with the usage amount
-	ResourceType ResourceType `json:"resource_type,omitempty"`
+	ResourceType ResourceType `db:"-" json:"resource_type,omitempty"`
 
 	// The date and time the usage value was last modified
-	LastModifiedAt *time.Time `gorm:"->" json:"last_modified_at,omitempty"`
+	LastModifiedAt *time.Time `db:"last_modified_at" json:"last_modified_at,omitempty"`
 }

@@ -1,0 +1,4 @@
+{
+  "error": "the resource type name and unit are both required",
+  "status": "Bad Request"
+}

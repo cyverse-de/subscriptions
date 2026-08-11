@@ -1,0 +1,91 @@
+{
+  "error": null,
+  "header": {
+    "map": {}
+  },
+  "subscription": {
+    "addons": [],
+    "effective_end_date": "<timestamp>",
+    "effective_start_date": "<timestamp>",
+    "paid": false,
+    "plan": {
+      "description": "Basic plan",
+      "name": "Basic",
+      "plan_quota_defaults": [
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 200,
+          "resource_type": {
+            "consumable": true,
+            "name": "cpu.hours",
+            "unit": "cpu hours",
+            "uuid": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        },
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 5368709120,
+          "resource_type": {
+            "consumable": false,
+            "name": "data.size",
+            "unit": "bytes",
+            "uuid": "99e3f91e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        }
+      ],
+      "plan_rates": [
+        {
+          "effective_date": "<timestamp>",
+          "rate": 0,
+          "uuid": "<uuid>"
+        }
+      ],
+      "uuid": "99e47c22-950a-11ec-84a4-406c8f3e9cbb"
+    },
+    "plan_rate": {
+      "effective_date": "<timestamp>",
+      "rate": 0,
+      "uuid": "<uuid>"
+    },
+    "quotas": [
+      {
+        "created_at": "<timestamp>",
+        "created_by": "qms",
+        "last_modified_at": "<timestamp>",
+        "last_modified_by": "qms",
+        "quota": 200,
+        "resource_type": {
+          "consumable": true,
+          "name": "cpu.hours",
+          "unit": "cpu hours",
+          "uuid": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
+        },
+        "subscription_id": "",
+        "uuid": "<uuid>"
+      },
+      {
+        "created_at": "<timestamp>",
+        "created_by": "qms",
+        "last_modified_at": "<timestamp>",
+        "last_modified_by": "qms",
+        "quota": 5368709120,
+        "resource_type": {
+          "consumable": false,
+          "name": "data.size",
+          "unit": "bytes",
+          "uuid": "99e3f91e-950a-11ec-84a4-406c8f3e9cbb"
+        },
+        "subscription_id": "",
+        "uuid": "<uuid>"
+      }
+    ],
+    "usages": [],
+    "user": {
+      "username": "nosuchuser",
+      "uuid": "<uuid>"
+    },
+    "uuid": "<uuid>"
+  }
+}

@@ -5,15 +5,21 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/cyverse-de/subscriptions/internal/qmsapi/db"
+	qmsdb "github.com/cyverse-de/subscriptions/internal/qmsapi/db"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
+	"github.com/doug-martin/goqu/v9"
 	"github.com/labstack/echo/v4"
 )
 
 // ValidateUser determines whether or not a username exists in the database. If an error occurs during the lookup or
 // the user doesn't exist then the appropriate response will be sent to the caller and an error will be returned.
 func (s Server) ValidateUser(ctx echo.Context, username string) error {
-	exists, err := db.UserExists(ctx.Request().Context(), s.GORMDB, username)
+	var exists bool
+	err := s.goquTransaction(ctx.Request().Context(), func(tx *goqu.TxDatabase) error {
+		var err error
+		exists, err = qmsdb.UserExists(ctx.Request().Context(), tx, username)
+		return err
+	})
 	if err != nil {
 		sendErr := model.Error(ctx, err.Error(), http.StatusInternalServerError)
 		if sendErr != nil {

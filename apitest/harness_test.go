@@ -125,9 +125,7 @@ func runSuite(m *testing.M) int {
 	// suffix discrepancy: New gets the bare domain from users.domain, while the
 	// QMS handlers get it with the leading "@" they trim with.
 	a := app.New(testDB, strings.TrimPrefix(UsernameSuffix, "@"), true)
-	if err = a.RegisterQMSAPI(UsernameSuffix); err != nil {
-		log.Fatalf("unable to register the QMS API: %s", err)
-	}
+	a.RegisterQMSAPI(UsernameSuffix)
 	testRouter = a.Router
 
 	return m.Run()

@@ -70,7 +70,7 @@ func (d *Database) UpsertUsage(ctx context.Context, update bool, value float64, 
 		).Executor()
 	}
 
-	log.Info(upsertE.ToSQL())
+	logStatement(upsertE)
 
 	_, err = upsertE.ExecContext(ctx)
 	if err != nil {

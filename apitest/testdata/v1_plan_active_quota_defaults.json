@@ -1,0 +1,21 @@
+{
+  "result": [
+    {
+      "effective_date": "<timestamp>",
+      "id": "<uuid>",
+      "quota_value": 200,
+      "resource_type": {
+        "consumable": false
+      }
+    },
+    {
+      "effective_date": "<timestamp>",
+      "id": "<uuid>",
+      "quota_value": 5368709120,
+      "resource_type": {
+        "consumable": false
+      }
+    }
+  ],
+  "status": "OK"
+}

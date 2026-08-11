@@ -1,0 +1,8 @@
+{
+  "result": {
+    "effective_date": "<timestamp>",
+    "id": "<uuid>",
+    "rate": 0
+  },
+  "status": "OK"
+}

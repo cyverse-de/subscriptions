@@ -1,0 +1,4 @@
+{
+  "error": "a plan name is required",
+  "status": "Bad Request"
+}

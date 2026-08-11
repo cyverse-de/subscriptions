@@ -1,0 +1,152 @@
+{
+  "error": null,
+  "header": {
+    "map": {}
+  },
+  "plans": [
+    {
+      "description": "Basic plan",
+      "name": "Basic",
+      "plan_quota_defaults": [
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 200,
+          "resource_type": {
+            "consumable": true,
+            "name": "cpu.hours",
+            "unit": "cpu hours",
+            "uuid": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        },
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 5368709120,
+          "resource_type": {
+            "consumable": false,
+            "name": "data.size",
+            "unit": "bytes",
+            "uuid": "99e3f91e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        }
+      ],
+      "plan_rates": [
+        {
+          "effective_date": "<timestamp>",
+          "rate": 0,
+          "uuid": "<uuid>"
+        }
+      ],
+      "uuid": "99e47c22-950a-11ec-84a4-406c8f3e9cbb"
+    },
+    {
+      "description": "Regular plan",
+      "name": "Regular",
+      "plan_quota_defaults": [
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 1000,
+          "resource_type": {
+            "consumable": true,
+            "name": "cpu.hours",
+            "unit": "cpu hours",
+            "uuid": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        },
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 53687091200,
+          "resource_type": {
+            "consumable": false,
+            "name": "data.size",
+            "unit": "bytes",
+            "uuid": "99e3f91e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        }
+      ],
+      "plan_rates": [
+        {
+          "effective_date": "<timestamp>",
+          "rate": 200,
+          "uuid": "<uuid>"
+        }
+      ],
+      "uuid": "c6d39580-98dc-11ec-bbe3-406c8f3e9cbb"
+    },
+    {
+      "description": "Professional plan",
+      "name": "Pro",
+      "plan_quota_defaults": [
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 20000,
+          "resource_type": {
+            "consumable": true,
+            "name": "cpu.hours",
+            "unit": "cpu hours",
+            "uuid": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        },
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 3298534883328,
+          "resource_type": {
+            "consumable": false,
+            "name": "data.size",
+            "unit": "bytes",
+            "uuid": "99e3f91e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        }
+      ],
+      "plan_rates": [
+        {
+          "effective_date": "<timestamp>",
+          "rate": 340,
+          "uuid": "<uuid>"
+        }
+      ],
+      "uuid": "cdf7ac7a-98dc-11ec-bbe3-406c8f3e9cbb"
+    },
+    {
+      "description": "Commercial plan",
+      "name": "Commercial",
+      "plan_quota_defaults": [
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 50000,
+          "resource_type": {
+            "consumable": true,
+            "name": "cpu.hours",
+            "unit": "cpu hours",
+            "uuid": "99e3bc7e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        },
+        {
+          "effective_date": "<timestamp>",
+          "quota_value": 5497558138880,
+          "resource_type": {
+            "consumable": false,
+            "name": "data.size",
+            "unit": "bytes",
+            "uuid": "99e3f91e-950a-11ec-84a4-406c8f3e9cbb"
+          },
+          "uuid": "<uuid>"
+        }
+      ],
+      "plan_rates": [
+        {
+          "effective_date": "<timestamp>",
+          "rate": 2000,
+          "uuid": "<uuid>"
+        }
+      ],
+      "uuid": "d80b5482-98dc-11ec-bbe3-406c8f3e9cbb"
+    }
+  ]
+}

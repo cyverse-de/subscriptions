@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cyverse-de/subscriptions/internal/qmsapi/db"
+	qmsdb "github.com/cyverse-de/subscriptions/internal/qmsapi/db"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/query"
+	"github.com/doug-martin/goqu/v9"
 	"github.com/labstack/echo/v4"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"gorm.io/gorm"
 )
 
 // SubscriptionAdderConfig contains the configuration for a subscription adder.
@@ -31,8 +31,8 @@ type SubscriptionAdder struct {
 }
 
 // NewSubscriptionAdder creates a new SubscriptionAdder instance.
-func NewSubscriptionAdder(tx *gorm.DB, cfg *SubscriptionAdderConfig) (*SubscriptionAdder, error) {
-	plansByName, err := db.GetPlansByName(cfg.Ctx, tx)
+func NewSubscriptionAdder(tx *goqu.TxDatabase, cfg *SubscriptionAdderConfig) (*SubscriptionAdder, error) {
+	plansByName, err := qmsdb.GetPlansByName(cfg.Ctx, tx)
 	if err != nil {
 		err = errors.Wrap(err, "unable to load subscription plan information")
 		return nil, err
@@ -78,7 +78,7 @@ func largestSubscription(subscriptions []*model.Subscription) *model.Subscriptio
 }
 
 // AddSubscription subscribes a user to a subscription plan.
-func (sa *SubscriptionAdder) AddSubscription(tx *gorm.DB, req model.SubscriptionRequest) *model.SubscriptionResponse {
+func (sa *SubscriptionAdder) AddSubscription(tx *goqu.TxDatabase, req model.SubscriptionRequest) *model.SubscriptionResponse {
 	username := req.Username
 	planName := req.PlanName
 	startDate := req.GetStartDate()
@@ -126,7 +126,7 @@ func (sa *SubscriptionAdder) AddSubscription(tx *gorm.DB, req model.Subscription
 	)
 
 	// Get the user information.
-	user, err := db.GetUser(sa.cfg.Ctx, tx, *username)
+	user, err := qmsdb.GetUser(sa.cfg.Ctx, tx, *username)
 	if err != nil {
 		log.Error(err)
 		return sa.subscriptionError(*username, err.Error())
@@ -137,7 +137,7 @@ func (sa *SubscriptionAdder) AddSubscription(tx *gorm.DB, req model.Subscription
 		// Adding this subscription overrides every subscription it overlaps, so the request is only an upgrade if it
 		// beats all of them. Comparing against just the subscription in effect on the start date would let a request
 		// cancel a better subscription scheduled later in the period without ever reporting a downgrade.
-		overlapping, err := db.ListOverlappingSubscriptionDetails(sa.cfg.Ctx, tx, *username, startDate, endDate)
+		overlapping, err := qmsdb.ListOverlappingSubscriptionDetails(sa.cfg.Ctx, tx, *username, startDate, endDate)
 		if err != nil {
 			log.Error(err)
 			return sa.subscriptionError(*username, err.Error())
@@ -154,21 +154,21 @@ func (sa *SubscriptionAdder) AddSubscription(tx *gorm.DB, req model.Subscription
 	}
 
 	// Ensure that no two subscriptions will be active at the same time..
-	err = db.DeactivateSubscriptions(sa.cfg.Ctx, tx, *user.ID, startDate, endDate)
+	err = qmsdb.DeactivateSubscriptions(sa.cfg.Ctx, tx, *user.ID, startDate, endDate)
 	if err != nil {
 		log.Error(err)
 		return sa.subscriptionError(*username, err.Error())
 	}
 
 	// Add the subscription.
-	sub, err := db.SubscribeUserToPlan(sa.cfg.Ctx, tx, user, plan, &req.SubscriptionOptions)
+	sub, err := qmsdb.SubscribeUserToPlan(sa.cfg.Ctx, tx, user, plan, &req.SubscriptionOptions)
 	if err != nil {
 		log.Error(err)
 		return sa.subscriptionError(*username, err.Error())
 	}
 
 	// Load the subscription details.
-	sub, err = db.GetSubscriptionDetails(sa.cfg.Ctx, tx, *sub.ID)
+	sub, err = qmsdb.GetSubscriptionDetails(sa.cfg.Ctx, tx, *sub.ID)
 	if err != nil {
 		log.Error(err)
 		return sa.subscriptionError(*username, err.Error())
@@ -220,7 +220,14 @@ func (s Server) AddSubscriptions(ctx echo.Context) error {
 		Force:          force,
 		UsernameSuffix: s.UsernameSuffix,
 	}
-	subscriptionAdder, err := NewSubscriptionAdder(s.GORMDB, saConfig)
+	// The plan listing the adder caches is read in a transaction of its own, which commits before the per-subscription
+	// transactions below open. Holding it open across them would nest transactions, which the goqu layer cannot do.
+	var subscriptionAdder *SubscriptionAdder
+	err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
+		var err error
+		subscriptionAdder, err = NewSubscriptionAdder(tx, saConfig)
+		return err
+	})
 	if err != nil {
 		log.Error(err)
 		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
@@ -229,7 +236,7 @@ func (s Server) AddSubscriptions(ctx echo.Context) error {
 	// Add a separate subscription for each subscription request in the request body.
 	response := make([]*model.SubscriptionResponse, len(body.Subscriptions))
 	for i, subscriptionRequest := range body.Subscriptions {
-		err = s.GORMDB.Transaction(func(tx *gorm.DB) error {
+		err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 			response[i] = subscriptionAdder.AddSubscription(
 				tx,
 				subscriptionRequest,
@@ -313,15 +320,15 @@ func (s Server) ListSubscriptions(ctx echo.Context) error {
 	// Obtain the subscription listing.
 	var subscriptions []*model.Subscription
 	var count int64
-	err = s.GORMDB.Transaction(func(tx *gorm.DB) error {
-		params := &db.SubscriptionListingParams{
+	err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
+		params := &qmsdb.SubscriptionListingParams{
 			Offset:    int(offset),
 			Limit:     int(limit),
 			SortField: dbSortField,
 			SortDir:   sortDir,
 			Search:    search,
 		}
-		subscriptions, count, err = db.ListSubscriptions(context, tx, params)
+		subscriptions, count, err = qmsdb.ListSubscriptions(context, tx, params)
 		return err
 	})
 	if err != nil {

@@ -1,0 +1,4 @@
+{
+  "error": "a resource type with the same name already exists",
+  "status": "Conflict"
+}

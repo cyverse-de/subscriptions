@@ -12,21 +12,21 @@ type Plan struct {
 	// The plan identifier
 	//
 	// readOnly: true
-	ID *string `gorm:"type:uuid;default:uuid_generate_v1()" json:"id,omitempty"`
+	ID *string `db:"id" json:"id,omitempty"`
 
 	// The plan name
-	Name string `gorm:"not null;unique" json:"name,omitempty"`
+	Name string `db:"name" json:"name,omitempty"`
 
 	// A brief description of the plan
 	//
 	// required: true
-	Description string `gorm:"not null" json:"description,omitempty"`
+	Description string `db:"description" json:"description,omitempty"`
 
 	// The default quota values associated with the plan
-	PlanQuotaDefaults []PlanQuotaDefault `json:"plan_quota_defaults,omitempty"`
+	PlanQuotaDefaults []PlanQuotaDefault `db:"-" json:"plan_quota_defaults,omitempty"`
 
 	// The rates associated with the plan.
-	PlanRates []PlanRate `json:"plan_rates,omitempty"`
+	PlanRates []PlanRate `db:"-" json:"plan_rates,omitempty"`
 }
 
 // Returns the currently active rate for a subscription plan. The active plan rate is the plan with the most recent
@@ -82,32 +82,35 @@ func (p *Plan) GetDefaultQuotaValues() map[string]*PlanQuotaDefault {
 }
 
 // PlanQuotaDefault define the structure for an Api Plan and Quota.
+//
+// Associations carry db:"-" because the goqu query layer loads each of them with its own query and assigns it in Go,
+// the way GORM's Preload did; leaving them mapped would make goqu look for columns no query selects.
 type PlanQuotaDefault struct {
 	// The plan quota default identifier
 	//
 	// readOnly: true
-	ID *string `gorm:"type:uuid;default:uuid_generate_v1()" json:"id,omitempty"`
+	ID *string `db:"id" json:"id,omitempty"`
 
 	// The plan ID
-	PlanID *string `gorm:"type:uuid;not null" json:"-"`
+	PlanID *string `db:"plan_id" json:"-"`
 
 	// The default quota value
 	//
 	// required: true
-	QuotaValue float64 `gorm:"not null" json:"quota_value,omitempty"`
+	QuotaValue float64 `db:"quota_value" json:"quota_value,omitempty"`
 
 	// The resource type ID
-	ResourceTypeID *string `gorm:"type:uuid;not null" json:"-"`
+	ResourceTypeID *string `db:"resource_type_id" json:"-"`
 
 	// The resource type
 	//
 	// required: true
-	ResourceType ResourceType `json:"resource_type,omitempty"`
+	ResourceType ResourceType `db:"-" json:"resource_type,omitempty"`
 
 	// The effective date
 	//
 	// required: true
-	EffectiveDate time.Time `json:"effective_date,omitempty"`
+	EffectiveDate time.Time `db:"effective_date" json:"effective_date,omitempty"`
 }
 
 // PlanRates
@@ -117,16 +120,16 @@ type PlanRate struct {
 	// The plan rate identifier
 	//
 	// readOnly: true
-	ID *string `gorm:"type:uuid;default:uuid_generate_v1()" json:"id,omitempty"`
+	ID *string `db:"id" json:"id,omitempty"`
 
 	// The plan ID
-	PlanID *string `gorm:"type:uuid;not null" json:"-"`
+	PlanID *string `db:"plan_id" json:"-"`
 
 	// The date that the plan rate becomes effective
-	EffectiveDate time.Time `json:"effective_date,omitempty"`
+	EffectiveDate time.Time `db:"effective_date" json:"effective_date,omitempty"`
 
 	// The rate
-	Rate float64 `gorm:"type:decimal(10,2)" json:"rate"`
+	Rate float64 `db:"rate" json:"rate"`
 }
 
 // Subscription define the structure for the API subscription.
@@ -136,40 +139,40 @@ type Subscription struct {
 	// The subscription identifier
 	//
 	// readOnly: true
-	ID *string `gorm:"type:uuid;default:uuid_generate_v1()" json:"id,omitempty"`
+	ID *string `db:"id" json:"id,omitempty"`
 
 	// The date and time the subscription becomes active
-	EffectiveStartDate *time.Time `gorm:"" json:"effective_start_date,omitempty"`
+	EffectiveStartDate *time.Time `db:"effective_start_date" json:"effective_start_date,omitempty"`
 
 	// The date and time the subscription expires
-	EffectiveEndDate *time.Time `gorm:"" json:"effective_end_date,omitempty"`
+	EffectiveEndDate *time.Time `db:"effective_end_date" json:"effective_end_date,omitempty"`
 
 	// The user identifier
-	UserID *string `gorm:"type:uuid;not null" json:"-"`
+	UserID *string `db:"user_id" json:"-"`
 
 	// The user associated with the subscription
-	User *User `json:"user,omitempty"`
+	User *User `db:"-" json:"user,omitempty"`
 
 	// The identifier of the plan associated with the subscription
-	PlanID *string `gorm:"type:uuid;not null" json:"-"`
+	PlanID *string `db:"plan_id" json:"-"`
 
 	// The plan associated with the subscription
-	Plan *Plan `json:"plan,omitempty"`
+	Plan *Plan `db:"-" json:"plan,omitempty"`
 
 	// The quotas associated with the subscription
-	Quotas []Quota `json:"quotas"`
+	Quotas []Quota `db:"-" json:"quotas"`
 
 	// The recorded usage amounts associated with the subscription
-	Usages []Usage `json:"usages"`
+	Usages []Usage `db:"-" json:"usages"`
 
 	// True if the user paid for the subscription.
-	Paid bool `json:"paid"`
+	Paid bool `db:"paid" json:"paid"`
 
 	// The ID of the plan rate at the time the subscription was created.
-	PlanRateID *string `gorm:"type:uuid;not null" json:"-"`
+	PlanRateID *string `db:"plan_rate_id" json:"-"`
 
 	// The plan rate at the time the subscription was created.
-	PlanRate *PlanRate `json:"plan_rate,omitempty"`
+	PlanRate *PlanRate `db:"-" json:"plan_rate,omitempty"`
 }
 
 // GetCurrentUsageValue returns the current usage value for the resource type with the given resource type ID. Be
