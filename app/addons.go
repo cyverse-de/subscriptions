@@ -334,6 +334,7 @@ func (a *App) getSubscriptionAddon(ctx context.Context, request *requests.ByUUID
 
 func (a *App) GetSubscriptionAddonHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
+	logDeprecatedRoute(c, "GET /subscription-addons/{uuid}")
 
 	addonID, err := uuidParam(c, "addon_uuid")
 	if err != nil {
@@ -519,6 +520,7 @@ func (a *App) deleteSubscriptionAddon(ctx context.Context, request *requests.ByU
 
 func (a *App) DeleteSubscriptionAddonHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
+	logDeprecatedRoute(c, "DELETE /subscription-addons/{uuid}")
 
 	addonID, err := uuidParam(c, "addon_uuid")
 	if err != nil {
@@ -637,11 +639,92 @@ func (a *App) UpdateSubscriptionAddonHTTPHandler(c echo.Context) error {
 	)
 
 	ctx := c.Request().Context()
+	logDeprecatedRoute(c, "POST /subscription-addons/{uuid}")
 
 	if err = c.Bind(&request); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"message": "bad request",
 		})
+	}
+
+	response := a.updateSubscriptionAddon(ctx, &request)
+
+	if response.Error != nil {
+		return c.JSON(int(response.Error.StatusCode), response)
+	}
+
+	return c.JSON(http.StatusOK, response)
+}
+
+// The handlers below serve /subscription-addons/{uuid}, which names what these
+// operations actually take: a subscription add-on's own UUID.
+//
+// The nested routes they replace are misdescribed by their own paths. Their
+// :addon_uuid segment is a subscription add-on's UUID rather than an add-on's,
+// and their :sub_uuid segment is ignored, so terrain passes the same value
+// twice. Making the nested paths authoritative instead is not possible:
+// subscription_addons has no unique constraint on (subscription_id, addon_id),
+// so a subscription and an add-on together do not identify one row.
+//
+// The nested routes still work and still carry the callers. Once terrain moves
+// over -- the deprecation warnings each one logs are how you can tell -- they
+// can be deleted, and the ByID suffix here goes with them.
+
+func (a *App) GetSubscriptionAddonByIDHTTPHandler(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	subAddonID, err := uuidParam(c, "uuid")
+	if err != nil {
+		return err
+	}
+
+	response := a.getSubscriptionAddon(ctx, &requests.ByUUID{Uuid: subAddonID})
+
+	if response.Error != nil {
+		return c.JSON(int(response.Error.StatusCode), response)
+	}
+
+	return c.JSON(http.StatusOK, response)
+}
+
+func (a *App) DeleteSubscriptionAddonByIDHTTPHandler(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	subAddonID, err := uuidParam(c, "uuid")
+	if err != nil {
+		return err
+	}
+
+	response := a.deleteSubscriptionAddon(ctx, &requests.ByUUID{Uuid: subAddonID})
+
+	if response.Error != nil {
+		return c.JSON(int(response.Error.StatusCode), response)
+	}
+
+	return c.JSON(http.StatusOK, response)
+}
+
+func (a *App) UpdateSubscriptionAddonByIDHTTPHandler(c echo.Context) error {
+	var request qms.UpdateSubscriptionAddonRequest
+
+	ctx := c.Request().Context()
+
+	subAddonID, err := uuidParam(c, "uuid")
+	if err != nil {
+		return err
+	}
+
+	if err = c.Bind(&request); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"message": "bad request",
+		})
+	}
+
+	// The path identifies the row on this route, so a body that names a
+	// different one does not get to win. A body with no subscription add-on at
+	// all still falls through to the guard in updateSubscriptionAddon.
+	if request.SubscriptionAddon != nil {
+		request.SubscriptionAddon.Uuid = subAddonID
 	}
 
 	response := a.updateSubscriptionAddon(ctx, &request)

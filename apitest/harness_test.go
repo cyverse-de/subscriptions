@@ -37,7 +37,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	_ "github.com/doug-martin/goqu/v9/dialect/postgres"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 // UsernameSuffix is the suffix the test server is configured with. Note that
@@ -163,6 +163,15 @@ func runMigrations(databaseURI string) error {
 	return nil
 }
 
+// seededAddonIDs are the add-ons the migrations insert. Add-ons live in a
+// reference table that resetDB leaves in place, because the goldens assert these
+// UUIDs exactly -- but an add-on a test creates has to go, or it turns up in the
+// next run's listing. That is what made the suite fail under -count=2.
+var seededAddonIDs = []string{
+	"c21dd61f-aa41-40ad-8005-859679ceed9c", // 1 TB
+	"f8d2066c-e3b2-4559-839e-88bfc997c89f", // 5000 CPU Hours
+}
+
 // resetDB empties the tables tests write to, leaving migration-seeded reference
 // data in place.
 func resetDB(t *testing.T) {
@@ -171,6 +180,14 @@ func resetDB(t *testing.T) {
 		if _, err := testDB.Exec(fmt.Sprintf("DELETE FROM %q", table)); err != nil {
 			t.Fatalf("unable to clear the %s table: %s", table, err)
 		}
+	}
+
+	// Anything referencing a test-created add-on goes with it through the
+	// ON DELETE CASCADE on addon_id.
+	if _, err := testDB.Exec(
+		`DELETE FROM addons WHERE id <> ALL($1)`, pq.Array(seededAddonIDs),
+	); err != nil {
+		t.Fatalf("unable to clear the test-created add-ons: %s", err)
 	}
 }
 
