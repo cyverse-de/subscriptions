@@ -441,6 +441,11 @@ needs the scalar and nothing else.
 
 ## `goquTransaction` vs `transaction`: a failed ROLLBACK discards the `txAbort` marker
 
+> **Superseded.** This section's "Warning for Tasks 11-14" says not to fix this.
+> It has since been fixed; see "The four transaction-wrapper defects" at the end
+> of this document. The diagnosis below is still accurate and still worth
+> reading — only the instruction is out of date.
+
 **Observed behavior:** the two transaction helpers in
 `internal/qmsapi/controllers/root.go` — `transaction` (GORM, `:54`) and
 `goquTransaction` (goqu, `:68`) — agree on every path except one: when the
@@ -617,6 +622,11 @@ per `CLAUDE.md`.
 
 ## `goquTransaction` starts its transaction without a context
 
+> **Superseded.** `db.Database` now has `BeginTx`, and both transaction wrappers
+> pass the request context; see "The four transaction-wrapper defects" at the end
+> of this document. The per-query context threading this section asks for is
+> still required.
+
 `db.Database` exposes only `Begin()` (`db/db.go:47`) — it never surfaces goqu's
 `BeginTx(ctx, opts)` — and `Wrap` issues its COMMIT/ROLLBACK without a context
 either. So `goquTransaction` cannot carry the request context on the
@@ -750,6 +760,10 @@ afterwards, since the transaction has to roll back either way. No golden moved;
 none covers this path in either direction.
 
 ## Converted read handlers now open a transaction, which changes the body of a database-down 500
+
+> **Superseded.** The envelope divergence recorded here is fixed: a failure to
+> BEGIN is now reported through `model.Error` like every other failure. See
+> "The four transaction-wrapper defects" at the end of this document.
 
 `ListResourceTypes`, `AddResourceType`, and `GetResourceTypeDetails` ran their
 queries directly against `s.GORMDB` with no explicit transaction. Their goqu
@@ -1837,3 +1851,205 @@ handler. Covered by the `an unknown resource name is refused` subtest of
 goldened so the diff against `goqu-baseline` stays limited to the six files the
 earlier fixes own. Against the pre-fix code it fails with `status = 500, want
 400`.
+
+## The four transaction-wrapper defects, and why three earlier entries above are now wrong
+
+An independent review of PR #36 found four defects in
+`internal/qmsapi/controllers/root.go`. All four are fixed on this branch. They
+survived the branch's own review because that review asked only "does the goqu
+wrapper match the GORM helper it replaced?" — and it did, faithfully, bugs
+included. The plumbing is new here even though the behavior is inherited, which
+is why the repair lands here rather than in a follow-up.
+
+**Three entries above are superseded and should not be followed:**
+
+- "`goquTransaction` vs `transaction`: a failed ROLLBACK discards the `txAbort`
+  marker" ends with "**do not** fix this by capturing the callback's error in a
+  closure variable and preferring it over `Wrap`'s return." That is now exactly
+  what the code does. The reasoning there — keeping the goqu wrapper in step
+  with `app/app.go`'s bare `tx.Wrap`, and the observation that the damage is at
+  worst a 500-body message — was sound while the migration was in flight and
+  parity was the success criterion. It stops being sound once the migration is
+  done and the wrapper is the only thing standing between a failed COMMIT and a
+  200.
+- "`goquTransaction` starts its transaction without a context" concludes that
+  giving `db.Database` a `BeginTx` "does not belong in a per-entity conversion
+  task." It doesn't; it belongs here, and it is done.
+- "Converted read handlers now open a transaction, which changes the body of a
+  database-down 500" records the BEGIN-failure envelope divergence as accepted.
+  It is no longer accepted; see defect 3.
+
+### Defect 1: the response was written before COMMIT
+
+`model.Success` flushes the response to the client. Every callback in
+`plans.go`, `resource_types.go` and `users.go` called it as its last act, and
+only then did the wrapper issue COMMIT. `POST /v1/plans` put
+`200 {"result":"Success"}` on the wire and then lost the plan to a COMMIT that
+failed — a connection reset, a serialization failure, a full disk. `Wrap`
+returned the commit error and `goquTransaction` handed it to echo, but the 200
+was gone, `Response.Committed` was true, and `HTTPErrorHandler` dropped the
+error on its `Committed` check. The caller was told a plan exists that doesn't,
+and nothing prompted a retry.
+
+**The fix: buffer the response.** `respondInTransaction` swaps
+`echo.Context`'s `*echo.Response` for one writing into a `bufferedResponse`,
+runs the callback, restores the real response, and flushes the buffer only
+after COMMIT returns nil. A buffered success whose COMMIT then fails is
+discarded and answered with `model.Error` instead. The `Committed` interaction
+stays coherent because the real `*echo.Response` is never touched while the
+buffer is in place: it is still uncommitted when the wrapper decides what to
+write, and committed only by the flush.
+
+**The alternative that was rejected: restructure the handlers** so each
+callback returns data and the handler writes the response after the transaction
+closes. It is cleaner in principle, and it is what the eight callbacks that
+*don't* write a response already do. It was rejected on size and risk: sixteen
+handlers, not the ~10 the brief estimated, and the count is the smaller half of
+the problem. Each of those callbacks reaches `txError` with a status it chooses
+per branch — 404 for a missing plan, 409 for a name conflict, 400 for a
+duplicate quota default, 500 for everything else — so "return the data" really
+means returning `(data, status, message)` out of every callback and rebuilding
+each handler's error ladder around it. That is a rewrite of every `/v1` write
+path on a branch whose whole claim is that no recorded response changed. The
+buffering fix is ~60 lines in one file and leaves all sixteen handler bodies
+untouched.
+
+**What the buffer costs:** the response body is held in memory instead of
+streamed. The largest buffered response is a plan listing or a subscription
+detail — kilobytes. `GET /v1/subscriptions`, the one listing that can reach
+megabytes, is not buffered: it writes its response from the handler.
+
+### Defect 2: a failed ROLLBACK destroyed the `txAbort` marker
+
+Recorded in full in the superseded entry above. goqu's `Wrap`
+(`goqu/v9@v9.19.0/database.go:637-640`) overwrites the callback's error with
+the ROLLBACK error when ROLLBACK fails, so `errors.As(err, &abort)` missed and
+the wrapper reported transaction plumbing in place of the handler's answer.
+
+**The fix:** neither wrapper uses `Wrap` any more. Both call `runCallback` —
+which only adds `Wrap`'s panic-then-rollback-then-repanic behavior, so
+`middleware.Recover` still renders a 500 — and then drive COMMIT and ROLLBACK
+themselves, reading the callback's error directly. A failed ROLLBACK is logged,
+not returned: the error that caused the rollback is the one the caller has to
+answer with, and (per the superseded entry) a failed ROLLBACK isn't even proof
+of a dead connection, since `database/sql` returns `ErrTxDone` for a
+transaction that already finished.
+
+### Defect 3: BEGIN and COMMIT failures escaped in echo's envelope
+
+A failed `Begin` returned the raw error to echo, which rendered it through
+`app/app.go`'s `HTTPErrorHandler` as `common.NewErrorResponse(err)` —
+`{"message": "context canceled"}`, an object-valued `error` field on the
+`ErrorResponse` type. Before the conversion these read handlers held no
+transaction and reported database failures through `model.Error`, giving
+`{"error": "<string>", "status": "Internal Server Error"}`. Terrain and Sonora
+both decode `error` as a string, so they failed to deserialize the error body
+during exactly the outage it was reporting.
+
+**The fix rides on defect 1's.** Because nothing reaches the client while the
+buffer is in place, `respondInTransaction` is still free to choose the
+response when BEGIN, COMMIT, or the callback fails, and it chooses
+`model.Error` for all three. This is the ordering interaction the brief
+predicted: the two fixes had to land in the same commit, because routing BEGIN
+and COMMIT failures through `model.Error` is only possible once the success
+response is no longer already on the wire.
+
+The eight call sites that keep `goquTransaction` need nothing: every one of
+them already wraps the returned error in `model.Error` (or, for
+`POST /v1/subscriptions`, in a per-item `failure_reason`), so `/v1`'s envelope
+was never at risk there.
+
+### Defect 4: the transaction began without the request context
+
+`db.Database` exposed only `Begin()`, which resolves to `database/sql`'s
+context-less `Begin` — no deadline, no cancellation, and an unbounded wait for
+a free connection when the pool is saturated. `db.Database` now also has
+`BeginTx(ctx, opts)`, and both wrappers pass the request context.
+`Begin()` is left in place for `app/app.go`'s `addUserUpdate`, which is outside
+this branch's scope.
+
+### Why the wrapper is now two functions
+
+`goquTransaction` takes a `context.Context` and never writes;
+`respondInTransaction` takes an `echo.Context` and owns the response. The split
+is forced, not stylistic: the buffering fix has to know whether the wrapper or
+the handler is going to answer, and it has to know that **before** BEGIN, which
+is the one failure that happens before anything has been written and so can't
+be inferred from whether the buffer ended up with something in it.
+
+Merging them would break `POST /v1/subscriptions`, whose per-item callback
+returns `nil` unconditionally and whose handler reports each failure as a
+`failure_reason` inside a 200. A wrapper that answered a commit failure itself
+would write a 500 and then let the handler append its 200 to the same body.
+`TestCommitFailureIsReportedPerSubscription` pins that.
+
+The signatures carry the rule: the wrapper that must not touch the response is
+the one that isn't given it.
+
+### How each defect was reached in a test
+
+All four are error paths that nothing exercised, which is why they survived
+review. They are in `apitest/qms_transaction_test.go`, and each was confirmed
+to fail against the code as it stood before its fix.
+
+- **Defect 1** — `TestCommitFailureIsNotReportedAsSuccess`. A
+  `CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY DEFERRED` on `plans` raises when
+  the transaction commits, which is precisely "the handler has already produced
+  its answer and COMMIT then fails." Against the pre-fix ordering it returns
+  `200 {"result":"Success","status":"OK"}` for a plan the same test then shows
+  is absent from the table.
+- **Defect 2** — `TestFailedRollbackKeepsTheHandlersResponse`. A `BEFORE INSERT`
+  trigger that calls `pg_terminate_backend(pg_backend_pid())` is the only way to
+  reach a failing ROLLBACK from outside the database: the INSERT fails with a
+  lost connection and the transaction can no longer be rolled back. **This test
+  does not discriminate against the code as it was before defect 1's fix**, and
+  the honest reason is in the superseded entry above: with the error response
+  already on the wire, a discarded `txAbort` produced identical bytes. It
+  discriminates now — a discarded marker leaves the bare rollback error in the
+  body instead of the handler's message — so it guards the current code rather
+  than proving the old bug. It asserts the message shows the connection really
+  died, so it can't keep passing if the trigger stops working.
+- **Defect 3** — the envelope assertion in `assertQMSError`, used by all three
+  failure tests. Against the pre-fix code the BEGIN case returns
+  `{"message":"context canceled"}`, with no string `error` field at all.
+- **Defect 4** — `TestTransactionsHonorTheRequestContext`. The pool is capped at
+  one connection, the test holds it, and the request arrives with an
+  already-cancelled context. With `BeginTx` the handler answers immediately;
+  with the context-less `Begin` it waits for a connection that the test is
+  holding, and the test fails on a ten-second timeout. It covers one route of
+  each kind.
+
+**What is still unexercised:** the panic path. `runCallback` rolls back and
+re-panics, and `respondInTransaction`'s deferred `SetResponse` puts the real
+response back before `middleware.Recover` — which runs outside the handler and
+therefore after every handler-frame defer — writes its 500. No `/v1` route has
+a reachable panic to provoke, so this is correct by construction and by frame
+ordering, not by test.
+
+## Sanitizing the error text took two transaction tests' evidence with it
+
+The wrapper fixes and the error-sanitization fixes were written on separate
+branches against the same base, and every controller file they share merged
+cleanly. Two tests still failed on the merged tree, because the two changes
+disagree about something no textual merge can see: the wrapper tests read the
+driver's error text out of the response body, and sanitizing is precisely the
+act of taking it out.
+
+- `TestCommitFailureIsReportedPerSubscription` matched the deferred trigger's
+  own `RAISE` text in `failure_reason`. That field now reads "unable to commit
+  the subscription" for every commit failure. The assertion moved to that
+  message — which only the transaction wrapper writes, since `AddSubscription`
+  reports its own failures in the entry it returns — plus a check that no
+  subscription row survives, so the response and the database still have to
+  agree.
+- `TestFailedRollbackKeepsTheHandlersResponse` matched `bad connection` in the
+  body as evidence that the backend really died and a ROLLBACK therefore really
+  failed. Nothing in the body can carry that now. The evidence moved to
+  `killBackendOnInsert`, which probes the trigger on its own connection when it
+  installs it; the test asserts only the handler's message, which is what it was
+  about.
+
+Both tests still fail against the pre-fix wrapper. The general point: a test
+that asserts on an error *message* is coupled to the error-handling policy, not
+just to the code path it is testing, and the coupling is invisible until a
+policy change lands beside it.

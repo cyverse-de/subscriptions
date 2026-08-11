@@ -36,7 +36,7 @@ const (
 func (s Server) GetAllUsers(ctx echo.Context) error {
 	context := ctx.Request().Context()
 
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		data, err := qmsdb.ListUsers(context, tx)
 		if err != nil {
 			return txDBError(ctx, err, "unable to list the users")
@@ -65,7 +65,7 @@ func (s Server) GetSubscriptionDetails(ctx echo.Context) error {
 	log = log.WithFields(logrus.Fields{"user": username})
 
 	// Start a transaction.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		var err error
 
 		// Look up or insert the user.
@@ -139,7 +139,7 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 	}
 
 	// Start a transaction.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.respondInTransaction(c, func(tx *goqu.TxDatabase) error {
 		// Look up the resource type.
 		resourceType, err := qmsdb.GetResourceTypeByName(ctx, tx, resourceTypeName)
 		if errors.Is(err, qmsdb.ErrNotFound) {
@@ -208,7 +208,7 @@ func (s Server) AddUser(ctx echo.Context) error {
 	log = log.WithFields(logrus.Fields{"user": username})
 
 	// Start a transaction.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		var err error
 
 		// Either add the user to the database or look up the existing user
@@ -305,7 +305,7 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 	})
 
 	// Start a transaction.
-	return s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		var err error
 
 		// Either add the user to the database or look up the existing user information.
@@ -413,7 +413,7 @@ func (s Server) ListUserSubscriptions(ctx echo.Context) error {
 	// Obtain the listing.
 	var subscriptions []*model.Subscription
 	var count int64
-	err = s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 		subscriptions, count, err = qmsdb.ListSubscriptionsForUser(context, tx, username, includeExpired, cutoff)
 		return err
 	})

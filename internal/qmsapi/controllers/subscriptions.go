@@ -223,7 +223,7 @@ func (s Server) AddSubscriptions(ctx echo.Context) error {
 	// The plan listing the adder caches is read in a transaction of its own, which commits before the per-subscription
 	// transactions below open. Holding it open across them would nest transactions, which the goqu layer cannot do.
 	var subscriptionAdder *SubscriptionAdder
-	err = s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 		var err error
 		subscriptionAdder, err = NewSubscriptionAdder(tx, saConfig)
 		return err
@@ -236,7 +236,7 @@ func (s Server) AddSubscriptions(ctx echo.Context) error {
 	// Add a separate subscription for each subscription request in the request body.
 	response := make([]*model.SubscriptionResponse, len(body.Subscriptions))
 	for i, subscriptionRequest := range body.Subscriptions {
-		err = s.goquTransaction(func(tx *goqu.TxDatabase) error {
+		err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 			response[i] = subscriptionAdder.AddSubscription(
 				tx,
 				subscriptionRequest,
@@ -325,7 +325,7 @@ func (s Server) ListSubscriptions(ctx echo.Context) error {
 	// Obtain the subscription listing.
 	var subscriptions []*model.Subscription
 	var count int64
-	err = s.goquTransaction(func(tx *goqu.TxDatabase) error {
+	err = s.goquTransaction(context, func(tx *goqu.TxDatabase) error {
 		params := &qmsdb.SubscriptionListingParams{
 			Offset:    int(offset),
 			Limit:     int(limit),
