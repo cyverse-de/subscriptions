@@ -17,11 +17,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const (
-	UpdateTypeSet = "SET"
-	UpdateTypeAdd = "ADD"
-)
-
 // swagger:route GET /v1/users users listUsers
 //
 // List Users

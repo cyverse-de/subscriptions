@@ -6,44 +6,12 @@ import (
 
 	t "github.com/cyverse-de/subscriptions/db/tables"
 	"github.com/doug-martin/goqu/v9"
-	"github.com/doug-martin/goqu/v9/exec"
 )
 
-// GetCurrentUsage returns the current usage value for the resource type specifed
-// by the resource type UUID and associated with the user plan UUID passed in.
-// Also returns whether or not the usage was actually found or the default value
-// was returned. Accepts a variable number of QueryOptions, though only WithTX
-// is currently supported.
-func (d *Database) GetCurrentUsage(ctx context.Context, resourceTypeID, subscriptionID string, opts ...QueryOption) (float64, bool, error) {
-	var (
-		err error
-		db  GoquDatabase
-	)
-
-	_, db = d.querySettings(opts...)
-
-	usagesE := db.From("usages").
-		Select(goqu.C("usage")).
-		Where(goqu.And(
-			goqu.I("resource_type_id").Eq(resourceTypeID),
-			goqu.I("subscription_id").Eq(subscriptionID),
-		)).
-		Limit(1).
-		Executor()
-
-	var usageValue float64
-	usageFound, err := usagesE.ScanValContext(ctx, &usageValue)
-	if err != nil {
-		return usageValue, false, err
-	}
-
-	return usageValue, usageFound, nil
-}
-
 // LoadUsageDetails retrieves the full usage row for the given resource type and
-// subscription, including the identity and audit columns that GetCurrentUsage
-// leaves behind. Returns a nil usage when no row exists. Accepts a variable
-// number of QueryOptions, though only WithTX is currently supported.
+// subscription, including the identity and audit columns that ApplyUsage leaves
+// behind. Returns a nil usage when no row exists. Accepts a variable number of
+// QueryOptions, though only WithTX is currently supported.
 func (d *Database) LoadUsageDetails(
 	ctx context.Context,
 	resourceTypeID, subscriptionID string,
@@ -84,45 +52,68 @@ func (d *Database) LoadUsageDetails(
 	return &usage, nil
 }
 
-// UpsertUsage will insert or update a record usage in the database for the
-// resource type and user plan indicated. Accepts a variable number of
-// QueryOptions, though only WithTX is currently supported.
-func (d *Database) UpsertUsage(ctx context.Context, update bool, value float64, resourceTypeID, subscriptionID string, opts ...QueryOption) error {
-	var (
-		err error
-		db  GoquDatabase
-	)
+// ApplyUsage applies an update operation to the usage a subscription has
+// recorded against a resource type and returns the stored result. Accepts a
+// variable number of QueryOptions, though only WithTX is currently supported.
+//
+// The arithmetic belongs in the statement rather than in Go. Two concurrent ADDs
+// that each read the row, add their value and write the total back serialize on
+// the row lock, and the second one overwrites the first with a total it computed
+// from the value it read before the first committed -- silently dropping an
+// increment, with no error and no way to notice after the fact.
+func (d *Database) ApplyUsage(
+	ctx context.Context,
+	updateType string,
+	value float64,
+	resourceTypeID, subscriptionID string,
+	opts ...QueryOption,
+) (float64, error) {
+	_, db := d.querySettings(opts...)
 
-	_, db = d.querySettings(opts...)
-
-	updateRecord := goqu.Record{
-		"usage":            value,
-		"resource_type_id": resourceTypeID,
-		"subscription_id":  subscriptionID,
-		"last_modified_by": "de",
-		"created_by":       "de",
+	// ADD folds the new value into whatever the row holds at the moment the statement reaches it, which is what makes
+	// it safe under concurrency; SET replaces the value outright and never needed the old one.
+	var storedUsage any
+	switch updateType {
+	case UpdateTypeSet:
+		storedUsage = goqu.I("excluded.usage")
+	case UpdateTypeAdd:
+		storedUsage = goqu.L("usages.usage + excluded.usage")
+	default:
+		return 0, fmt.Errorf("invalid update type: %s", updateType)
 	}
 
-	var upsertE exec.QueryExecutor
-	if !update {
-		upsertE = db.Insert("usages").Rows(updateRecord).Executor()
-	} else {
-		upsertE = db.Update("usages").Set(updateRecord).Where(
-			goqu.And(
-				goqu.I("resource_type_id").Eq(resourceTypeID),
-				goqu.I("subscription_id").Eq(subscriptionID),
-			),
-		).Executor()
-	}
+	// The conflict target is the unique index on (resource_type_id, subscription_id). created_by is deliberately absent
+	// from the update: it describes the insert that created the row, and the statement this replaces overwrote it on
+	// every update.
+	query := db.Insert(t.Usages).
+		Rows(goqu.Record{
+			"usage":            value,
+			"resource_type_id": resourceTypeID,
+			"subscription_id":  subscriptionID,
+			"created_by":       "de",
+			"last_modified_by": "de",
+		}).
+		OnConflict(goqu.DoUpdate("resource_type_id,subscription_id", goqu.Record{
+			"usage":            storedUsage,
+			"last_modified_by": "de",
+		})).
+		Returning(t.Usages.Col("usage"))
 
-	logStatement(upsertE)
+	// Logged unconditionally, as the statement this replaces was and as the sibling upsert in quotas.go still is.
+	// EnableSQLLogging is never called, so routing this through d.LogSQL would silently retire the only record of a
+	// usage write that operators have.
+	logStatement(query)
 
-	_, err = upsertE.ExecContext(ctx)
+	var stored float64
+	found, err := query.Executor().ScanValContext(ctx, &stored)
 	if err != nil {
-		return err
+		return 0, err
+	}
+	if !found {
+		return 0, fmt.Errorf("the usage upsert for subscription %s returned no row", subscriptionID)
 	}
 
-	return nil
+	return stored, nil
 }
 
 // CalculateUsage upserts a new usage value, ignore the updates tables. Should only
@@ -130,31 +121,13 @@ func (d *Database) UpsertUsage(ctx context.Context, update bool, value float64, 
 // out of sync with the updates. Accepts a variable number of QueryOptions,
 // though only WithTX is currently supported.
 func (d *Database) CalculateUsage(ctx context.Context, updateType string, usage *Usage, opts ...QueryOption) error {
-	var (
-		err           error
-		newUsageValue float64
-	)
-
-	currentUsageValue, doUpdate, err := d.GetCurrentUsage(ctx, usage.ResourceType.ID, usage.SubscriptionID, opts...)
+	stored, err := d.ApplyUsage(ctx, updateType, usage.Usage, usage.ResourceType.ID, usage.SubscriptionID, opts...)
 	if err != nil {
 		return err
 	}
-	log.Debugf("the current usage value is %f", currentUsageValue)
+	log.Debugf("the stored usage value is %f", stored)
 
-	switch updateType {
-	case UpdateTypeSet:
-		newUsageValue = usage.Usage
-	case UpdateTypeAdd:
-		newUsageValue = currentUsageValue + usage.Usage
-	default:
-		return fmt.Errorf("invalid update type: %s", updateType)
-	}
-
-	usage.Usage = newUsageValue
-
-	if err = d.UpsertUsage(ctx, doUpdate, newUsageValue, usage.ResourceType.ID, usage.SubscriptionID, opts...); err != nil {
-		return err
-	}
+	usage.Usage = stored
 
 	return nil
 }

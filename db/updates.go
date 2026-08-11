@@ -190,29 +190,13 @@ func (d *Database) ProcessUpdateForUsage(ctx context.Context, update *Update, op
 		}
 	}
 
-	log.Debug("getting current usage")
-	usageValue, usageFound, err := d.GetCurrentUsage(ctx, update.ResourceType.ID, subscription.ID, opts...)
+	log.Debugf("update operation name is %s", update.UpdateOperation.Name)
+	log.Debug("applying the update to the stored usage")
+	usageValue, err := d.ApplyUsage(ctx, update.UpdateOperation.Name, update.Value, update.ResourceType.ID, subscription.ID, opts...)
 	if err != nil {
 		return err
 	}
-	log.Debugf("done getting current usage of %f", usageValue)
-
-	log.Debugf("update operation name is %s", update.UpdateOperation.Name)
-	switch update.UpdateOperation.Name {
-	case UpdateTypeSet:
-		usageValue = update.Value
-	case UpdateTypeAdd:
-		usageValue = usageValue + update.Value
-	default:
-		return fmt.Errorf("invalid update type: %s", update.UpdateOperation.Name)
-	}
 	log.Debugf("new usage value is %f", usageValue)
-
-	log.Debug("upserting new usage value")
-	if err = d.UpsertUsage(ctx, usageFound, usageValue, update.ResourceType.ID, subscription.ID, opts...); err != nil {
-		return err
-	}
-	log.Debug("done upserting new value")
 
 	return nil
 }

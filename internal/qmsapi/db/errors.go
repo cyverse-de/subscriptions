@@ -14,6 +14,12 @@ var (
 	// matching one sentinel. Every match on this is a 404-versus-500 decision.
 	ErrNotFound = errors.New("record not found")
 
+	// ErrUnsupportedUpdateType reports an update operation this layer has no
+	// arithmetic for. Handlers reject an operation that isn't in
+	// update_operations before reaching a write, so this only fires for one
+	// that exists in the table but has never been implemented here.
+	ErrUnsupportedUpdateType = errors.New("unsupported update type")
+
 	// ErrEmptySlice reports a bulk write that was handed nothing to write. It
 	// reproduces GORM's ErrEmptySlice, which Create raised whenever its
 	// destination was a zero-length slice, verbatim: the two plan write
