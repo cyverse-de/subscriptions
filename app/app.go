@@ -24,6 +24,17 @@ import (
 
 var log = logging.Log.WithFields(logrus.Fields{"package": "apps"})
 
+// logDeprecatedRoute records a call to a route that has a replacement. It is the
+// signal for when the old route can be deleted: once nothing logs this, nothing
+// is calling it.
+func logDeprecatedRoute(c echo.Context, replacement string) {
+	log.WithFields(logrus.Fields{
+		"method":      c.Request().Method,
+		"uri":         c.Request().URL.Path,
+		"replacement": replacement,
+	}).Warn("deprecated route called")
+}
+
 // logRequest records the outcome of one request. The level follows the status so
 // that a routine 404 doesn't read like an outage: only a 5xx is this service's
 // fault, while a 4xx is worth seeing without being an error.
@@ -132,8 +143,17 @@ func New(db *sqlx.DB, userSuffix string, reportOverages bool) *App {
 	app.Router.POST("/addons/:uuid", app.UpdateAddonHTTPHandler)
 	app.Router.DELETE("/addons/:uuid", app.DeleteAddonHTTPHandler)
 	app.Router.GET("/subscriptions/:uuid/addons", app.ListSubscriptionAddonsHTTPHandler)
-	app.Router.GET("/subscriptions/:sub_uuid/addons/:addon_uuid", app.GetSubscriptionAddonHTTPHandler)
 	app.Router.PUT("/subscriptions/:sub_uuid/addons/:addon_uuid", app.AddSubscriptionAddonHTTPHandler)
+
+	// A subscription add-on is addressed by its own UUID, which is what these
+	// routes take. See the note above the handlers.
+	app.Router.GET("/subscription-addons/:uuid", app.GetSubscriptionAddonByIDHTTPHandler)
+	app.Router.POST("/subscription-addons/:uuid", app.UpdateSubscriptionAddonByIDHTTPHandler)
+	app.Router.DELETE("/subscription-addons/:uuid", app.DeleteSubscriptionAddonByIDHTTPHandler)
+
+	// Deprecated, and still what terrain calls. Their :addon_uuid segment is a
+	// subscription add-on's UUID and their :sub_uuid segment is ignored.
+	app.Router.GET("/subscriptions/:sub_uuid/addons/:addon_uuid", app.GetSubscriptionAddonHTTPHandler)
 	app.Router.DELETE("/subscriptions/:sub_uuid/addons/:addon_uuid", app.DeleteSubscriptionAddonHTTPHandler)
 	app.Router.POST("/subscriptions/:sub_uuid/addons/:addon_uuid", app.UpdateSubscriptionAddonHTTPHandler)
 	app.Router.PUT("/users", app.AddUserHTTPHandler)
