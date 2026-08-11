@@ -16,7 +16,6 @@ var log = logging.Log.WithFields(logrus.Fields{"package": "db"})
 type Database struct {
 	fullDB *goqu.Database
 	goquDB GoquDatabase
-	logSQL bool
 }
 
 func New(dbconn *sqlx.DB) *Database {
@@ -27,20 +26,17 @@ func New(dbconn *sqlx.DB) *Database {
 	return &Database{
 		fullDB: goquDB, // Used when a method needs to use a method not defined in the GoquDatabase interface.
 		goquDB: goquDB, // Used when a method needs to optionally support being run inside a transaction.
-		logSQL: false,  // Set to true to log SQL statements. TODO: implement for all statements.
 	}
 }
 
-// EnableSQLLogging enables SQL logging for the database instance.
-func (d *Database) EnableSQLLogging() {
-	d.logSQL = true
-}
-
-// LogSQL logs an SQL statement that is being executed if debugging is enabled.
+// LogSQL logs an SQL statement that is being executed.
+//
+// The log level decides whether it appears, rather than a flag on the database.
+// A per-instance flag could not work here: handlers build a Database per request
+// with New, so only the instance the flag was set on would ever log, and the
+// dozens of call sites in this package stayed silent for exactly that reason.
 func (d *Database) LogSQL(statement SQLStatement) {
-	if d.logSQL {
-		logStatement(statement)
-	}
+	logStatement(statement)
 }
 
 // logStatement logs a statement alongside its bound parameters. Both are needed
@@ -52,7 +48,7 @@ func logStatement(statement SQLStatement) {
 		log.Errorf("unable to generate the SQL: %s", err)
 		return
 	}
-	log.Infof("%s %v", sql, args)
+	log.Debugf("%s %v", sql, args)
 }
 
 func (d *Database) Begin() (*goqu.TxDatabase, error) {

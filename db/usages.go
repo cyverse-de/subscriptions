@@ -98,11 +98,7 @@ func (d *Database) ApplyUsage(
 			"last_modified_by": "de",
 		})).
 		Returning(t.Usages.Col("usage"))
-
-	// Logged unconditionally, as the statement this replaces was and as the sibling upsert in quotas.go still is.
-	// EnableSQLLogging is never called, so routing this through d.LogSQL would silently retire the only record of a
-	// usage write that operators have.
-	logStatement(query)
+	d.LogSQL(query)
 
 	var stored float64
 	found, err := query.Executor().ScanValContext(ctx, &stored)

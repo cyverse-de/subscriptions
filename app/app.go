@@ -24,6 +24,32 @@ import (
 
 var log = logging.Log.WithFields(logrus.Fields{"package": "apps"})
 
+// logRequest records the outcome of one request. The level follows the status so
+// that a routine 404 doesn't read like an outage: only a 5xx is this service's
+// fault, while a 4xx is worth seeing without being an error.
+func logRequest(_ echo.Context, v middleware.RequestLoggerValues) error {
+	entry := log.WithFields(logrus.Fields{
+		"method":  v.Method,
+		"uri":     v.URI,
+		"status":  v.Status,
+		"latency": v.Latency.String(),
+	})
+	if v.Error != nil {
+		entry = entry.WithField("error", v.Error.Error())
+	}
+
+	switch {
+	case v.Status >= http.StatusInternalServerError:
+		entry.Error("request failed")
+	case v.Status >= http.StatusBadRequest:
+		entry.Warn("request rejected")
+	default:
+		entry.Info("request")
+	}
+
+	return nil
+}
+
 type App struct {
 	db             *sqlx.DB
 	Router         *echo.Echo
@@ -43,6 +69,27 @@ func New(db *sqlx.DB, userSuffix string, reportOverages bool) *App {
 	// body) returns a 500 through the error handler instead of dropping the
 	// connection.
 	app.Router.Use(middleware.Recover())
+
+	// Account for every request, whether or not its handler logs anything of its
+	// own. Several routes -- the whole add-on tree among them -- log nothing at
+	// all, so without this there is no way to tell from the logs that a request
+	// even arrived.
+	app.Router.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		// The greeting route is what the liveness and readiness probes call,
+		// twice every five seconds. Logging it would bury real traffic.
+		Skipper: func(c echo.Context) bool {
+			return c.Request().Method == http.MethodGet && c.Request().URL.Path == "/"
+		},
+		LogMethod:  true,
+		LogURI:     true,
+		LogStatus:  true,
+		LogLatency: true,
+		LogError:   true,
+		// Let the error handler run first, so the status logged here is the one
+		// the client actually received.
+		HandleError:   true,
+		LogValuesFunc: logRequest,
+	}))
 
 	app.Router.HTTPErrorHandler = func(err error, c echo.Context) {
 		// A handler that already wrote its response and then failed would
