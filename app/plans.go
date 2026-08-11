@@ -148,8 +148,13 @@ func (a *App) getPlan(ctx context.Context, request *qms.PlanRequest) *qms.PlanRe
 func (a *App) GetPlanHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
+	planID, err := uuidParam(c, "plan_id")
+	if err != nil {
+		return err
+	}
+
 	request := &qms.PlanRequest{
-		PlanId: c.Param("plan_id"),
+		PlanId: planID,
 	}
 
 	response := a.getPlan(ctx, request)

@@ -98,8 +98,10 @@ func New(db *sqlx.DB, userSuffix string, reportOverages bool) *App {
 			return
 		}
 
-		code := http.StatusInternalServerError
-		var body interface{}
+		var (
+			code int
+			body interface{}
+		)
 
 		switch err := err.(type) {
 		case common.ErrorResponse:
@@ -113,6 +115,10 @@ func New(db *sqlx.DB, userSuffix string, reportOverages bool) *App {
 			code = echoErr.Code
 			body = common.NewErrorResponse(err)
 		default:
+			// HTTPStatusCode resolves the sentinels and the ValidationError
+			// wrapper, so a handler can report bad input by returning the error
+			// rather than writing the response itself.
+			code = errors.HTTPStatusCode(err)
 			body = common.NewErrorResponse(err)
 		}
 

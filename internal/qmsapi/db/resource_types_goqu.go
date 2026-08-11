@@ -88,10 +88,12 @@ func ListResourceTypes(ctx context.Context, tx *goqu.TxDatabase) (*model.Resourc
 
 	// Initialized rather than declared nil so that an empty result marshals as [] and not null: goqu only touches the
 	// destination once per row, where GORM's Find replaced it with an empty slice before reading any.
-	// Deliberately unordered: the query this replaces had no ORDER BY, and adding one would reorder the response.
+	// Ordered by name: without an ORDER BY the response follows the heap, so updating any row -- a rename, a
+	// consumable flag flipped -- silently reorders the list for every client afterwards.
 	resourceTypes := []*model.ResourceType{}
 	err := tx.From(t.RT).
 		Select(resourceTypeColumns...).
+		Order(t.RT.Col("name").Asc()).
 		Executor().
 		ScanStructsContext(ctx, &resourceTypes)
 	if err != nil {

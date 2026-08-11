@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/cyverse-de/go-mod/logging"
 	"github.com/cyverse-de/p/go/svcerror"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -26,6 +28,12 @@ var (
 	ErrSubscriptionAddonsExist = errors.New("subscription add-ons exist")
 	ErrInvalidRequestBody      = errors.New("required fields are missing from the request body")
 )
+
+// genericServerErrorMessage is what a client is told when the failure is this
+// service's fault. It carries no detail on purpose; the detail is logged.
+const genericServerErrorMessage = "the request could not be completed"
+
+var log = logging.Log.WithFields(logrus.Fields{"package": "errors"})
 
 func New(s string) error {
 	return errors.New(s)
@@ -140,9 +148,23 @@ func NatsError(ctx context.Context, err error) *svcerror.ServiceError {
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
 
+	status := HTTPStatusCode(err)
+
+	// Anything this package doesn't recognize is a 500, and a 500 here is
+	// usually a database error whose text names tables, columns, constraints and
+	// PostgreSQL error codes. Describing the schema to whoever can provoke an
+	// error is not something a client needs, and the client can do nothing with
+	// it either. The real error goes to the log, where an operator can pair it
+	// with the request line.
+	message := err.Error()
+	if status == http.StatusInternalServerError {
+		log.WithError(err).Error("request failed")
+		message = genericServerErrorMessage
+	}
+
 	return &svcerror.ServiceError{
 		ErrorCode:  NatsStatusCode(err),
-		StatusCode: int32(HTTPStatusCode(err)),
-		Message:    err.Error(),
+		StatusCode: int32(status),
+		Message:    message,
 	}
 }

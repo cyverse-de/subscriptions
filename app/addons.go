@@ -147,6 +147,11 @@ func (a *App) updateAddon(ctx context.Context, request *qms.UpdateAddonRequest) 
 		return response
 	}
 
+	if err := requireUUID(request.Addon.Uuid, "uuid"); err != nil {
+		response.Error = serrors.NatsError(ctx, err)
+		return response
+	}
+
 	updateAddon := db.NewUpdateAddonFromQMS(request)
 
 	tx, err := d.Begin()
@@ -194,7 +199,11 @@ func (a *App) UpdateAddonHTTPHandler(c echo.Context) error {
 		})
 	}
 
-	request.Addon.Uuid = c.Param("uuid")
+	addonID, err := uuidParam(c, "uuid")
+	if err != nil {
+		return err
+	}
+	request.Addon.Uuid = addonID
 
 	response := a.updateAddon(ctx, &request)
 
@@ -238,8 +247,13 @@ func (a *App) deleteAddon(ctx context.Context, request *requests.ByUUID) *qms.Ad
 func (a *App) DeleteAddonHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
+	addonID, err := uuidParam(c, "uuid")
+	if err != nil {
+		return err
+	}
+
 	request := requests.ByUUID{
-		Uuid: c.Param("uuid"),
+		Uuid: addonID,
 	}
 
 	response := a.deleteAddon(ctx, &request)
@@ -284,8 +298,13 @@ func (a *App) listSubscriptionAddons(ctx context.Context, request *requests.ByUU
 func (a *App) ListSubscriptionAddonsHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
+	subscriptionID, err := uuidParam(c, "uuid")
+	if err != nil {
+		return err
+	}
+
 	request := &requests.ByUUID{
-		Uuid: c.Param("uuid"),
+		Uuid: subscriptionID,
 	}
 
 	response := a.listSubscriptionAddons(ctx, request)
@@ -316,8 +335,13 @@ func (a *App) getSubscriptionAddon(ctx context.Context, request *requests.ByUUID
 func (a *App) GetSubscriptionAddonHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
+	addonID, err := uuidParam(c, "addon_uuid")
+	if err != nil {
+		return err
+	}
+
 	request := &requests.ByUUID{
-		Uuid: c.Param("addon_uuid"),
+		Uuid: addonID,
 	}
 
 	response := a.getSubscriptionAddon(ctx, request)
@@ -395,9 +419,18 @@ func (a *App) addSubscriptionAddon(ctx context.Context, request *requests.Associ
 func (a *App) AddSubscriptionAddonHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
+	subscriptionID, err := uuidParam(c, "sub_uuid")
+	if err != nil {
+		return err
+	}
+	addonID, err := uuidParam(c, "addon_uuid")
+	if err != nil {
+		return err
+	}
+
 	request := &requests.AssociateByUUIDs{
-		ParentUuid: c.Param("sub_uuid"),
-		ChildUuid:  c.Param("addon_uuid"),
+		ParentUuid: subscriptionID,
+		ChildUuid:  addonID,
 	}
 
 	response := a.addSubscriptionAddon(ctx, request)
@@ -487,8 +520,13 @@ func (a *App) deleteSubscriptionAddon(ctx context.Context, request *requests.ByU
 func (a *App) DeleteSubscriptionAddonHTTPHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
+	addonID, err := uuidParam(c, "addon_uuid")
+	if err != nil {
+		return err
+	}
+
 	request := &requests.ByUUID{
-		Uuid: c.Param("addon_uuid"),
+		Uuid: addonID,
 	}
 
 	response := a.deleteSubscriptionAddon(ctx, request)
@@ -514,6 +552,11 @@ func (a *App) updateSubscriptionAddon(ctx context.Context, request *qms.UpdateSu
 
 	if request.SubscriptionAddon.Uuid == "" {
 		response.Error = serrors.NatsError(ctx, serrors.AsBadRequest(errors.New("uuid must be set in the request")))
+		return response
+	}
+
+	if err := requireUUID(request.SubscriptionAddon.Uuid, "uuid"); err != nil {
+		response.Error = serrors.NatsError(ctx, err)
 		return response
 	}
 
