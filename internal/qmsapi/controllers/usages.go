@@ -114,31 +114,22 @@ func (s Server) addUsage(ctx context.Context, usage *Usage) error {
 		}
 		log.Debug("verified update operation from database")
 
-		// Determine the new usage value.
-		var newUsageValue float64
-		currentUsageValue := subscription.GetCurrentUsageValue(*resourceType.ID)
-		log.Debugf("the current usage value is %f", currentUsageValue)
-		switch usage.UpdateType {
-		case UpdateTypeSet:
-			newUsageValue = usage.UsageValue
-		case UpdateTypeAdd:
-			newUsageValue = currentUsageValue + usage.UsageValue
-		default:
-			return fmt.Errorf("%w: %s", ErrInvalidUpdateType, usage.UpdateType)
-		}
-		log.Debugf("calculated the new usage to be %f", newUsageValue)
-
-		// Update the usage.
+		// Apply the update to the stored usage. The value carried in is the operand, not the result: ApplyUsage does
+		// the arithmetic in the database so that concurrent ADDs cannot overwrite each other.
 		newUsage := &model.Usage{
 			SubscriptionID: subscription.ID,
 			ResourceTypeID: resourceType.ID,
-			Usage:          newUsageValue,
+			Usage:          usage.UsageValue,
 		}
-		err = qmsdb.UpsertUsage(ctx, tx, newUsage)
-		if err != nil {
+		if err = qmsdb.ApplyUsage(ctx, tx, usage.UpdateType, newUsage); err != nil {
+			// An operation that exists in update_operations but has no arithmetic here is still the caller naming an
+			// update type this endpoint can't apply, which is the 400 the removed switch answered with.
+			if errors.Is(err, qmsdb.ErrUnsupportedUpdateType) {
+				return fmt.Errorf("%w: %s", ErrInvalidUpdateType, usage.UpdateType)
+			}
 			return errors.Wrap(err, "unable to update or insert the usage record")
 		}
-		log.Debug("added/updated the usage record in the database")
+		log.Debugf("the stored usage value is %f", newUsage.Usage)
 
 		// Record the update in the database.
 		update := model.Update{
