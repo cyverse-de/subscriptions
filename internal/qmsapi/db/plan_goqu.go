@@ -285,13 +285,12 @@ func planExists(ctx context.Context, tx *goqu.TxDatabase, condition goqu.Express
 }
 
 // GetActivePlanRate returns the currently active rate for a subscription plan, which is the rate with the most recent
-// effective date that has already passed. A plan with no active rate is not an error: the returned plan rate carries
-// only the plan ID in that case, which is the shape the GORM query it replaces produced and what the response pins.
+// effective date that has already passed. It returns an error matching ErrNotFound when the plan has no rate in effect.
 func GetActivePlanRate(ctx context.Context, tx *goqu.TxDatabase, planID string) (*model.PlanRate, error) {
 	wrapMsg := fmt.Sprintf("unable to look up the active plan rate for '%s'", planID)
 
 	planRate := model.PlanRate{PlanID: &planID}
-	_, err := tx.From(t.PlanRates).
+	found, err := tx.From(t.PlanRates).
 		Select(planRateColumns...).
 		Where(
 			goqu.C("plan_id").Eq(planID),
@@ -304,15 +303,15 @@ func GetActivePlanRate(ctx context.Context, tx *goqu.TxDatabase, planID string) 
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
 	}
+	if !found {
+		return nil, fmt.Errorf("%s: %w", wrapMsg, ErrNotFound)
+	}
 
 	return &planRate, nil
 }
 
 // GetActivePlanQuotaDefaults returns the currently active quota defaults for a subscription plan, which are the quota
 // defaults for each resource type with the most recent effective date that has already passed.
-//
-// The resource type of each quota default is deliberately left unloaded: the query this replaces never joined
-// resource_types, and the response the route returns is pinned with the resulting empty resource_type objects.
 func GetActivePlanQuotaDefaults(
 	ctx context.Context, tx *goqu.TxDatabase, planID string,
 ) ([]model.PlanQuotaDefault, error) {
@@ -332,6 +331,20 @@ func GetActivePlanQuotaDefaults(
 		ScanStructsContext(ctx, &planQuotaDefaults)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+
+	resourceTypeIDs := make([]string, 0, len(planQuotaDefaults))
+	for _, planQuotaDefault := range planQuotaDefaults {
+		resourceTypeIDs = append(resourceTypeIDs, *planQuotaDefault.ResourceTypeID)
+	}
+	resourceTypes, err := resourceTypesByID(ctx, tx, resourceTypeIDs)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", wrapMsg, err)
+	}
+	for i := range planQuotaDefaults {
+		if resourceType, ok := resourceTypes[*planQuotaDefaults[i].ResourceTypeID]; ok {
+			planQuotaDefaults[i].ResourceType = *resourceType
+		}
 	}
 
 	return planQuotaDefaults, nil

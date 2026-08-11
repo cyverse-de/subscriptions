@@ -39,7 +39,7 @@ func (s Server) GetAllUsers(ctx echo.Context) error {
 	return s.respondInTransaction(ctx, func(tx *goqu.TxDatabase) error {
 		data, err := qmsdb.ListUsers(context, tx)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to list the users")
 		}
 		return ctx.JSON(http.StatusOK, model.SuccessResponse(data, http.StatusOK))
 	})
@@ -71,7 +71,7 @@ func (s Server) GetSubscriptionDetails(ctx echo.Context) error {
 		// Look up or insert the user.
 		user, err := qmsdb.GetUser(context, tx, username)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the user")
 		}
 
 		log.Debugf("found user %s in db", user.Username)
@@ -79,7 +79,7 @@ func (s Server) GetSubscriptionDetails(ctx echo.Context) error {
 		// Look up or create the user plan.
 		subscription, err := qmsdb.GetActiveSubscriptionDetails(context, tx, user.Username)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the user's active subscription")
 		}
 		log.Debugf("user plan name is %s", subscription.Plan.Name)
 
@@ -149,21 +149,21 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 		}
 		if err != nil {
 			log.Error(err)
-			return txError(c, err.Error(), http.StatusInternalServerError)
+			return txDBError(c, err, "unable to look up the resource type")
 		}
 
 		// Determine whether or not the user has an active subscription.
 		hasActiveSubscription, err := qmsdb.HasActiveSubscription(ctx, tx, username)
 		if err != nil {
 			log.Error(err)
-			return txError(c, err.Error(), http.StatusInternalServerError)
+			return txDBError(c, err, "unable to look up the user's active subscription")
 		}
 
 		// Load the user's current subscription, creating a new subscription if necessary.
 		subcription, err := qmsdb.GetActiveSubscription(ctx, tx, username)
 		if err != nil {
 			log.Error(err)
-			return txError(c, err.Error(), http.StatusInternalServerError)
+			return txDBError(c, err, "unable to look up the user's active subscription")
 		}
 
 		// Insert or update the quota.
@@ -175,14 +175,14 @@ func (s Server) UpdateCurrentSubscriptionQuota(c echo.Context) error {
 		err = qmsdb.UpsertQuota(ctx, tx, quota)
 		if err != nil {
 			log.Error(err)
-			return txError(c, err.Error(), http.StatusInternalServerError)
+			return txDBError(c, err, "unable to save the quota")
 		}
 
 		// Load the subscription details.
 		details, err := qmsdb.GetSubscriptionDetails(ctx, tx, *subcription.ID)
 		if err != nil {
 			log.Error(err)
-			return txError(c, err.Error(), http.StatusInternalServerError)
+			return txDBError(c, err, "unable to look up the subscription")
 		}
 
 		// Return the response.
@@ -215,7 +215,7 @@ func (s Server) AddUser(ctx echo.Context) error {
 		// information.
 		user, err := qmsdb.GetUser(context, tx, username)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the user")
 		}
 
 		log.Debug("found user in the database")
@@ -224,7 +224,7 @@ func (s Server) AddUser(ctx echo.Context) error {
 		// plan if not subscribed already.
 		_, err = qmsdb.GetActiveSubscription(context, tx, user.Username)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the user's active subscription")
 		}
 
 		log.Debug("ensured that user is subscribed to a plan")
@@ -311,7 +311,7 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 		// Either add the user to the database or look up the existing user information.
 		user, err := qmsdb.GetUser(context, tx, username)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the user")
 		}
 		log.Debug("found user in the database")
 
@@ -322,14 +322,14 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 			return txError(ctx, msg, http.StatusBadRequest)
 		}
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the plan")
 		}
 		log.Debug("verified that plan exists in database")
 
 		// Deactivate conflicting subscriptions for the user.
 		err = qmsdb.DeactivateSubscriptions(context, tx, *user.ID, startDate, endDate)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to deactivate the conflicting subscriptions")
 		}
 		log.Debug("deactivated conflicting subscriptions for the user")
 
@@ -346,7 +346,7 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 		// Subscribe the user to the plan.
 		subscription, err := qmsdb.SubscribeUserToPlan(context, tx, user, plan, opts)
 		if err != nil {
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to add the subscription")
 		}
 		log.Debug("finished adding the new subscription")
 
@@ -354,7 +354,7 @@ func (s Server) UpdateSubscription(ctx echo.Context) error {
 		details, err := qmsdb.GetSubscriptionDetails(context, tx, *subscription.ID)
 		if err != nil {
 			log.Error(err)
-			return txError(ctx, err.Error(), http.StatusInternalServerError)
+			return txDBError(ctx, err, "unable to look up the subscription")
 		}
 
 		// Return the response.
@@ -418,8 +418,9 @@ func (s Server) ListUserSubscriptions(ctx echo.Context) error {
 		return err
 	})
 	if err != nil {
+		// Every way the caller can get this wrong is rejected above, so anything that fails here is a server fault.
 		log.Error(err)
-		return model.Error(ctx, err.Error(), http.StatusBadRequest)
+		return dbError(ctx, err, "unable to list the user's subscriptions")
 	}
 
 	// Build the result.

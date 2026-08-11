@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 )
 
@@ -41,6 +42,43 @@ func TestUserSubscriptionEndpoints(t *testing.T) {
 		got := do(t, http.MethodGet, "/v1/users/nosuchuser"+UsernameSuffix+"/plan", "")
 		assertGolden(t, "user_plan_autocreated", got, http.StatusOK)
 	})
+}
+
+// A database failure while listing a user's subscriptions used to be reported
+// as 400 Bad Request, telling the caller its own input was at fault. Bad input
+// is still a 400: the username, include-expired and cutoff parameters are all
+// validated before the listing runs. Nothing in the golden set reaches this
+// path, so the failure is injected into a row the listing has to read — a quota
+// on the user's own subscription pointing at a resource type that cannot be
+// scanned.
+func TestListUserSubscriptionsReportsADatabaseFailure(t *testing.T) {
+	resetDB(t)
+	createUser(t, testUser)
+	unscannableResourceType(t, "test.unscannable")
+
+	if _, err := testDB.Exec(`
+		INSERT INTO quotas (subscription_id, resource_type_id, quota)
+		SELECT s.id, rt.id, 1
+		  FROM subscriptions s
+		  JOIN users u ON s.user_id = u.id
+		  JOIN resource_types rt ON rt.name = $2
+		 WHERE u.username = $1`, trimmedUser, "test.unscannable",
+	); err != nil {
+		t.Fatalf("unable to add the quota referring to the unscannable resource type: %s", err)
+	}
+
+	got := do(t, http.MethodGet, "/v1/users/"+testUser+"/subscriptions", "")
+	if got.status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body: %s", got.status, got.body)
+	}
+
+	// The scan failure names the column and the Go type it could not fill; the
+	// caller gets the operation that failed instead.
+	assertNoDatabaseDetail(t, got)
+	errMsg, _ := mustDecode(t, got)["error"].(string)
+	if errMsg != "unable to list the user's subscriptions" {
+		t.Errorf("error = %q, want %q", errMsg, "unable to list the user's subscriptions")
+	}
 }
 
 // PUT /v1/users/{username}/{plan_name} backs both the admin and the
@@ -227,6 +265,28 @@ func TestUsageEndpoints(t *testing.T) {
 		)
 		assertGolden(t, "usage_add_bad_update_type", do(t, http.MethodPost, "/v1/usages", body), http.StatusBadRequest)
 	})
+
+	// A resource name that doesn't exist is bad input for the same reason, and
+	// the two branches sit four lines apart. This one returned a bare
+	// fmt.Errorf that httpStatusCode could not classify, so a caller with a
+	// typo got a 500 and a reason to retry forever. Asserted rather than
+	// goldened so the diff against goqu-baseline stays limited to the files the
+	// earlier fixes own.
+	t.Run("an unknown resource name is refused", func(t *testing.T) {
+		body := fmt.Sprintf(
+			`{"username": %q, "resource_name": "no.such.resource", "usage_value": 1, "update_type": "SET", "metadata": "{}"}`,
+			testUser,
+		)
+		got := do(t, http.MethodPost, "/v1/usages", body)
+		if got.status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body: %s", got.status, got.body)
+		}
+
+		errMsg, _ := mustDecode(t, got)["error"].(string)
+		if errMsg != "invalid resource name: no.such.resource" {
+			t.Errorf("error = %q, want %q", errMsg, "invalid resource name: no.such.resource")
+		}
+	})
 }
 
 // The bulk subscription endpoints. POST is the one terrain's admin
@@ -251,6 +311,45 @@ func TestBulkSubscriptionEndpoints(t *testing.T) {
 	t.Run("list with a search term that matches nothing", func(t *testing.T) {
 		got := do(t, http.MethodGet, "/v1/subscriptions?offset=0&limit=50&search=nomatch", "")
 		assertGolden(t, "subscriptions_list_empty", got, http.StatusOK)
+	})
+
+	// The listing caps limit at 1000 to bound both the prepared-statement bind
+	// parameter count and the response size; a caller over the cap gets a 400
+	// rather than a silently truncated page.
+	t.Run("limit at the upper bound succeeds", func(t *testing.T) {
+		got := do(t, http.MethodGet, "/v1/subscriptions?offset=0&limit=1000", "")
+		if got.status != http.StatusOK {
+			t.Fatalf("status = %d, body %s", got.status, got.body)
+		}
+	})
+
+	// The rejection message must state the accepted range, not just refuse the
+	// request, since the whole point of rejecting (rather than clamping) is
+	// that the caller learns why 5000 didn't work.
+	t.Run("limit above the upper bound is rejected", func(t *testing.T) {
+		got := do(t, http.MethodGet, "/v1/subscriptions?offset=0&limit=5000", "")
+		if got.status != http.StatusBadRequest {
+			t.Fatalf("status = %d, body %s", got.status, got.body)
+		}
+		body := mustDecode(t, got)
+		errMsg, _ := body["error"].(string)
+		wantMsg := "invalid query parameter: limit: must be between 0 and 1000 (got 5000)"
+		if errMsg != wantMsg {
+			t.Errorf("error = %q, want %q", errMsg, wantMsg)
+		}
+	})
+
+	t.Run("a negative offset is rejected with the accepted range", func(t *testing.T) {
+		got := do(t, http.MethodGet, "/v1/subscriptions?offset=-1&limit=50", "")
+		if got.status != http.StatusBadRequest {
+			t.Fatalf("status = %d, body %s", got.status, got.body)
+		}
+		body := mustDecode(t, got)
+		errMsg, _ := body["error"].(string)
+		wantMsg := "invalid query parameter: offset: must be at least 0 (got -1)"
+		if errMsg != wantMsg {
+			t.Errorf("error = %q, want %q", errMsg, wantMsg)
+		}
 	})
 
 	// A limit of zero asks for the total alone. It can't be pinned with the
@@ -287,5 +386,60 @@ func TestAddUserResponse(t *testing.T) {
 	stored := queryInt(t, `SELECT count(*) FROM users WHERE username = $1`, trimmedUser)
 	if stored != 1 {
 		t.Errorf("users rows = %d, want 1", stored)
+	}
+}
+
+// The subscription search escapes the LIKE metacharacters so that a term
+// containing one matches it literally. The backslash is a metacharacter too --
+// it is PostgreSQL's default LIKE escape character -- and a term containing one
+// used to have it consume the following character, quietly returning every
+// username matching the term with the backslash removed and never the username
+// that actually contains it.
+//
+// The percent case additionally pins the escaping order: escaping the backslash
+// after % and _ rather than before would double the backslashes just introduced
+// in front of them and turn those wildcards live again.
+func TestSubscriptionSearchEscapesLikeMetacharacters(t *testing.T) {
+	resetDB(t)
+
+	for _, username := range []string{`a\b`, `a%b`, "ab"} {
+		subscribeUser(t, username, "Basic")
+	}
+
+	testCases := []struct {
+		name   string
+		search string
+		want   string
+	}{
+		{name: "a backslash matches only the username containing it", search: `a\b`, want: `a\b`},
+		{name: "a percent sign matches only the username containing it", search: `a%b`, want: `a%b`},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := "/v1/subscriptions?offset=0&limit=50&search=" + url.QueryEscape(tc.search)
+			got := do(t, http.MethodGet, path, "")
+			if got.status != http.StatusOK {
+				t.Fatalf("status = %d, body %s", got.status, got.body)
+			}
+
+			result, ok := mustDecode(t, got)["result"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected response shape: %s", got.body)
+			}
+			listed, ok := result["subscriptions"].([]any)
+			if !ok || len(listed) != 1 {
+				t.Fatalf("matched %d subscriptions, want exactly 1; body: %s", len(listed), got.body)
+			}
+
+			subscription, _ := listed[0].(map[string]any)
+			user, _ := subscription["user"].(map[string]any)
+			if username, _ := user["username"].(string); username != tc.want {
+				t.Errorf("matched username = %q, want %q", username, tc.want)
+			}
+			if total, _ := result["total"].(float64); total != 1 {
+				t.Errorf("total = %v, want 1", total)
+			}
+		})
 	}
 }

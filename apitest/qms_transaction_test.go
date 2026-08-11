@@ -67,6 +67,17 @@ func killBackendOnInsert(t *testing.T, table string) {
 		execSQL(t, `DROP TRIGGER IF EXISTS apitest_kill_backend ON `+table)
 		execSQL(t, `DROP FUNCTION IF EXISTS apitest_kill_backend()`)
 	})
+
+	// Prove the trigger really takes the backend down, on this connection rather than the handler's. A test that only
+	// watched the handler's response would keep passing if the trigger degraded into an ordinary failed insert, since
+	// the response no longer quotes the driver's error.
+	_, err := testDB.Exec(`INSERT INTO ` + table + ` (name, unit) VALUES ('apitest.killprobe', 'count')`)
+	if err == nil {
+		t.Fatalf("the probe insert into %s succeeded, so the trigger is not killing backends", table)
+	}
+	if !strings.Contains(err.Error(), "bad connection") {
+		t.Fatalf("the probe insert into %s failed without losing the connection: %s", table, err)
+	}
 }
 
 // assertQMSError checks that a response carries the /v1 error envelope: a string "error" field and the status text.
@@ -163,9 +174,18 @@ func TestCommitFailureIsReportedPerSubscription(t *testing.T) {
 	if !isObject {
 		t.Fatalf("the result entry is %#v, want an object", results[0])
 	}
+	// Only the transaction wrapper produces this message: AddSubscription reports its own failures in the entry it
+	// returns, so a wrapper-authored failure_reason means the transaction itself failed. The deferred trigger makes
+	// that failure a COMMIT rather than a BEGIN.
 	reason, isString := entry["failure_reason"].(string)
-	if !isString || !strings.Contains(reason, commitFailureMessage) {
+	if !isString || !strings.Contains(reason, "unable to commit the subscription") {
 		t.Errorf("failure_reason = %#v, want the commit failure; body: %s", entry["failure_reason"], got.body)
+	}
+
+	// The response and the database have to agree. This also stands in for the assertion on the trigger's own message,
+	// which the response no longer carries now that database error text is kept out of it.
+	if count := queryInt(t, `SELECT count(*) FROM subscriptions`); count != 0 {
+		t.Errorf("subscriptions = %d, want 0", count)
 	}
 }
 
@@ -181,15 +201,10 @@ func TestFailedRollbackKeepsTheHandlersResponse(t *testing.T) {
 	message := assertQMSError(t, got, http.StatusInternalServerError)
 
 	// The response has to carry the message the handler wrote, not the wrapper's account of the transaction that was
-	// carrying it. A discarded txAbort leaves the bare rollback error here instead.
-	if !strings.HasPrefix(message, "unable to save resource type") {
+	// carrying it. A discarded txAbort leaves the bare rollback error here instead. That the ROLLBACK really did fail
+	// is established by killBackendOnInsert's own probe, not from this message, which no longer quotes the driver.
+	if !strings.HasPrefix(message, "unable to save the resource type") {
 		t.Errorf("the error message is not the one the handler wrote: %s", message)
-	}
-
-	// Evidence that the connection really did die, and therefore that the ROLLBACK this test is about really did
-	// fail. Without it the test would keep passing if the trigger ever stopped taking the backend down.
-	if !strings.Contains(message, "bad connection") {
-		t.Errorf("the insert did not fail with a lost connection, so no ROLLBACK failed: %s", message)
 	}
 }
 

@@ -24,13 +24,18 @@ func (a *App) addQuota(ctx context.Context, request *qms.AddQuotaRequest) *qms.Q
 		return response
 	}
 	err = tx.Wrap(func() error {
-		var err error
+		// The request may identify the resource type by name instead of by ID, so resolve it the way addPlan does
+		// rather than treating the ID as required.
+		resourceType, err := d.LookupResoureType(ctx, db.NewResourceTypeFromQMS(request.Quota.ResourceType), db.WithTX(tx))
+		if err != nil {
+			return err
+		}
 
 		// Store the quota in the database, overwriting the old quota if one exists for the resource type.
 		err = d.UpsertQuota(
 			ctx,
 			float64(request.Quota.Quota),
-			request.Quota.ResourceType.Uuid,
+			resourceType.ID,
 			subscriptionID,
 			db.WithTX(tx),
 		)
@@ -40,7 +45,7 @@ func (a *App) addQuota(ctx context.Context, request *qms.AddQuotaRequest) *qms.Q
 
 		// Load the quota from the database.
 		quota, err := d.LoadQuotaDetails(ctx,
-			request.Quota.ResourceType.Uuid,
+			resourceType.ID,
 			subscriptionID,
 			db.WithTX(tx),
 		)

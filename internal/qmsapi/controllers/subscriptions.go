@@ -129,7 +129,7 @@ func (sa *SubscriptionAdder) AddSubscription(tx *goqu.TxDatabase, req model.Subs
 	user, err := qmsdb.GetUser(sa.cfg.Ctx, tx, *username)
 	if err != nil {
 		log.Error(err)
-		return sa.subscriptionError(*username, err.Error())
+		return sa.subscriptionError(*username, "unable to look up the user")
 	}
 
 	// Check the current plan if we're supposed to.
@@ -140,7 +140,7 @@ func (sa *SubscriptionAdder) AddSubscription(tx *goqu.TxDatabase, req model.Subs
 		overlapping, err := qmsdb.ListOverlappingSubscriptionDetails(sa.cfg.Ctx, tx, *username, startDate, endDate)
 		if err != nil {
 			log.Error(err)
-			return sa.subscriptionError(*username, err.Error())
+			return sa.subscriptionError(*username, "unable to look up the overlapping subscriptions")
 		}
 
 		// A user with no subscription over the period has nothing to compare against, so the request proceeds.
@@ -157,21 +157,21 @@ func (sa *SubscriptionAdder) AddSubscription(tx *goqu.TxDatabase, req model.Subs
 	err = qmsdb.DeactivateSubscriptions(sa.cfg.Ctx, tx, *user.ID, startDate, endDate)
 	if err != nil {
 		log.Error(err)
-		return sa.subscriptionError(*username, err.Error())
+		return sa.subscriptionError(*username, "unable to deactivate the conflicting subscriptions")
 	}
 
 	// Add the subscription.
 	sub, err := qmsdb.SubscribeUserToPlan(sa.cfg.Ctx, tx, user, plan, &req.SubscriptionOptions)
 	if err != nil {
 		log.Error(err)
-		return sa.subscriptionError(*username, err.Error())
+		return sa.subscriptionError(*username, "unable to add the subscription")
 	}
 
 	// Load the subscription details.
 	sub, err = qmsdb.GetSubscriptionDetails(sa.cfg.Ctx, tx, *sub.ID)
 	if err != nil {
 		log.Error(err)
-		return sa.subscriptionError(*username, err.Error())
+		return sa.subscriptionError(*username, "unable to look up the subscription")
 	}
 
 	return model.SubscriptionResponseFromSubscription(sub, true)
@@ -230,7 +230,7 @@ func (s Server) AddSubscriptions(ctx echo.Context) error {
 	})
 	if err != nil {
 		log.Error(err)
-		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+		return dbError(ctx, err, "unable to load the subscription plan information")
 	}
 
 	// Add a separate subscription for each subscription request in the request body.
@@ -252,7 +252,7 @@ func (s Server) AddSubscriptions(ctx echo.Context) error {
 				username = *subscriptionRequest.Username
 			}
 			log.Error(err)
-			response[i] = subscriptionAdder.subscriptionError(username, err.Error())
+			response[i] = subscriptionAdder.subscriptionError(username, "unable to commit the subscription")
 		}
 	}
 
@@ -285,7 +285,12 @@ func (s Server) ListSubscriptions(ctx echo.Context) error {
 		return model.Error(ctx, err.Error(), http.StatusBadRequest)
 	}
 	var limit int32 = 50
-	limit, err = query.ValidateIntQueryParam(ctx, "limit", &limit, "gte=0")
+	// 1000 caps the response size: listings return fully-loaded subscription
+	// objects (user, plan, quota defaults, rates, quotas, usages), so a page
+	// this large is already a multi-megabyte response against a default page
+	// size of 50. It also keeps the batch loaders' bind-parameter counts well
+	// under PostgreSQL's 65535 prepared-statement limit.
+	limit, err = query.ValidateIntQueryParam(ctx, "limit", &limit, "gte=0", "lte=1000")
 	if err != nil {
 		log.Error(err)
 		return model.Error(ctx, err.Error(), http.StatusBadRequest)
@@ -333,7 +338,7 @@ func (s Server) ListSubscriptions(ctx echo.Context) error {
 	})
 	if err != nil {
 		log.Error(err)
-		return model.Error(ctx, err.Error(), http.StatusInternalServerError)
+		return dbError(ctx, err, "unable to list the subscriptions")
 	}
 
 	// Build the result.

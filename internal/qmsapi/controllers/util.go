@@ -11,6 +11,21 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// dbError reports a failed database operation as a server error. A driver error names tables, indexes, constraints and
+// PostgreSQL error codes, so the error itself is logged and the caller is told only which operation failed. Pass
+// attempted as a description of the operation, such as "unable to list the plans".
+func dbError(ctx echo.Context, err error, attempted string) error {
+	log.WithError(err).Error(attempted)
+	return model.Error(ctx, attempted, http.StatusInternalServerError)
+}
+
+// txDBError is dbError for use inside a transaction callback, where the response has to be wrapped so that the
+// transaction rolls back rather than committing the write it is reporting as failed.
+func txDBError(ctx echo.Context, err error, attempted string) error {
+	log.WithError(err).Error(attempted)
+	return txError(ctx, attempted, http.StatusInternalServerError)
+}
+
 // ValidateUser determines whether or not a username exists in the database. If an error occurs during the lookup or
 // the user doesn't exist then the appropriate response will be sent to the caller and an error will be returned.
 func (s Server) ValidateUser(ctx echo.Context, username string) error {
@@ -21,7 +36,7 @@ func (s Server) ValidateUser(ctx echo.Context, username string) error {
 		return err
 	})
 	if err != nil {
-		sendErr := model.Error(ctx, err.Error(), http.StatusInternalServerError)
+		sendErr := dbError(ctx, err, "unable to look up the user")
 		if sendErr != nil {
 			ctx.Logger().Errorf("unable to send response: %s", sendErr.Error())
 		}

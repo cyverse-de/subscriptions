@@ -618,8 +618,12 @@ func ListSubscriptions(
 
 	conditions := []goqu.Expression{activeNowExpression()}
 	if params != nil && params.Search != "" {
-		// The LIKE metacharacters are escaped so that a search term containing one matches it literally.
-		search := strings.ReplaceAll(params.Search, "%", `\%`)
+		// The LIKE metacharacters are escaped so that a search term containing one matches it literally. The
+		// backslash has to go first because it is the escape character itself: escaping it after % and _ would
+		// also double the backslashes just introduced in front of them, turning those back into literal
+		// backslashes followed by live wildcards.
+		search := strings.ReplaceAll(params.Search, `\`, `\\`)
+		search = strings.ReplaceAll(search, "%", `\%`)
 		search = strings.ReplaceAll(search, "_", `\_`)
 		conditions = append(conditions, t.Users.Col("username").Like("%"+search+"%"))
 	}

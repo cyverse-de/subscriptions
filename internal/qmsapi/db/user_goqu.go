@@ -42,10 +42,12 @@ func ListUsers(ctx context.Context, tx *goqu.TxDatabase) ([]model.User, error) {
 
 	// Initialized rather than declared nil so that an empty result marshals as [] and not null: goqu only touches the
 	// destination once per row, where GORM's Find replaced it with an empty slice before reading any.
-	// Deliberately unordered: the query this replaces had no ORDER BY, and adding one would reorder the response.
+	// Ordered by username, which is unique and is what the response identifies a user by, so the listing is a total
+	// order rather than whatever order the rows happen to be stored in.
 	users := []model.User{}
 	err := tx.From(t.Users).
 		Select(userColumns...).
+		Order(goqu.C("username").Asc()).
 		Executor().
 		ScanStructsContext(ctx, &users)
 	if err != nil {

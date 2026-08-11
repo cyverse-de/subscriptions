@@ -108,6 +108,30 @@ func TestUpdateResourceType(t *testing.T) {
 	}
 }
 
+// A failed homonym lookup used to be reported as 409 Conflict along with the raw
+// database error, so a server fault reached the caller as "you picked a name
+// that's taken". Only a real collision is a conflict. Nothing in the golden set
+// reaches this path, which is why it stayed wrong: the lookup has to fail while
+// the GetResourceTypeByID above it succeeds, so the failure is injected into the
+// row the homonym query reads and nothing else.
+func TestUpdateResourceTypeReportsAFailedHomonymLookup(t *testing.T) {
+	resetDB(t)
+	unscannableResourceType(t, "test.unscannable")
+
+	cpuHoursID := resourceTypeIDFor(t, "cpu.hours")
+	updated := `{"name": "test.unscannable", "unit": "gizmos", "consumable": true}`
+	got := do(t, http.MethodPut, "/v1/resource-types/"+cpuHoursID, updated)
+	if got.status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body: %s", got.status, got.body)
+	}
+
+	// The update has to have been rolled back along with the failure.
+	name := queryString(t, `SELECT name FROM resource_types WHERE id = $1`, cpuHoursID)
+	if name != "cpu.hours" {
+		t.Errorf("the resource type name is now %q, want \"cpu.hours\"", name)
+	}
+}
+
 // An empty listing has to marshal as [] rather than null, which no golden can
 // check: resource_types is seeded reference data, so every recorded response is
 // non-empty. The two layers disagree by default — GORM's Find replaced the

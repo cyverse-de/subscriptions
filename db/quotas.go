@@ -55,6 +55,7 @@ func (d *Database) LoadQuotaDetails(
 		Select(
 			t.Quotas.Col("id").As("id"),
 			t.Quotas.Col("quota").As("quota"),
+			t.Quotas.Col("subscription_id").As("subscription_id"),
 			t.Quotas.Col("created_by").As("created_by"),
 			t.Quotas.Col("created_at").As("created_at"),
 			t.Quotas.Col("last_modified_by").As("last_modified_by"),

@@ -3,6 +3,7 @@ package apitest
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -105,6 +106,28 @@ func updateBody(resourceName, unit, operation string, value float64) string {
 	)
 }
 
+// unscannableResourceType inserts a resource type whose consumable column is
+// NULL, which model.ResourceType declares as a plain bool, so every query that
+// reads the row fails the scan. It is the only handle this suite has on the
+// error path of a resource type lookup: resource_types has no other nullable
+// column, and the alternatives (dropping a column, revoking a privilege,
+// closing the pool) break every other query in the same request too. The row
+// is removed when the test ends, taking anything referencing it with it
+// through the ON DELETE CASCADE on resource_type_id; even a hard crash can't
+// leak it across runs, since TestMain starts a fresh postgres:17 testcontainer
+// per run and terminates it afterward.
+func unscannableResourceType(t *testing.T, name string) {
+	t.Helper()
+	// Register the delete before inserting, not after, so a test that fails
+	// partway through still cleans up the row.
+	cleanupResourceType(t, name)
+	if _, err := testDB.Exec(
+		`INSERT INTO resource_types (name, unit, consumable) VALUES ($1, 'broken', NULL)`, name,
+	); err != nil {
+		t.Fatalf("unable to insert the unscannable resource type: %s", err)
+	}
+}
+
 // queryFloat runs a single-value query against the test database.
 func queryFloat(t *testing.T, query string, args ...any) float64 {
 	t.Helper()
@@ -133,4 +156,32 @@ func queryInt(t *testing.T, query string, args ...any) int {
 		t.Fatalf("query failed: %s\nquery: %s", err, query)
 	}
 	return value
+}
+
+// databaseDetail are fragments only a driver error carries. Bare table names
+// are deliberately not on this list: "subscriptions" and "users" are ordinary
+// words in a sanitized message like "unable to list the user's subscriptions",
+// so matching them would flag the safe messages rather than the leaks.
+var databaseDetail = []string{
+	"pq:",
+	"SQLSTATE",
+	"violates",
+	"constraint",
+	"Scan error",
+	"sql/driver",
+	"column index",
+}
+
+// assertNoDatabaseDetail fails when a response body leaks the driver's own
+// error text. A 500 body should say which operation failed and nothing else:
+// table, index and constraint names describe the schema to anyone who can
+// provoke an error.
+func assertNoDatabaseDetail(t *testing.T, got response) {
+	t.Helper()
+	body := string(got.body)
+	for _, fragment := range databaseDetail {
+		if strings.Contains(body, fragment) {
+			t.Errorf("response leaks database detail %q: %s", fragment, body)
+		}
+	}
 }

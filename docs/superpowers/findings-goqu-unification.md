@@ -53,6 +53,19 @@ fail the branch's golden-diff success criterion. Reproduce the current,
 under-populated shape exactly. Fixing this is deliberately deferred to a
 follow-up change outside this branch.
 
+**FIXED on `goqu-deferred-fixes`.** `GetActivePlanQuotaDefaults`
+(`internal/qmsapi/db/plan_goqu.go`) now collects the `resource_type_id` of
+every row it scanned and loads the types with `resourceTypesByID`, the same
+batch loader `loadPlanDetailsBatch` and the subscription and update loaders
+already use, assigning each one onto its quota default. The `DISTINCT ON`
+query itself is unchanged — the resource types are loaded separately rather
+than joined in, so the row order the golden pins is untouched. Golden that
+moved: `apitest/testdata/v1_plan_active_quota_defaults.json`, whose two
+entries now carry the real `id`, `name`, `unit`, and `consumable` for
+`cpu.hours` and `data.size` in place of the bare `"consumable": false`. The
+only other caller, `TestEmptyPlanListingsAreArrays`, exercises the empty
+case, where the loader is a no-op.
+
 ## `GET /v1/users` and `GET /v1/usages/{username}/updates`: no `ORDER BY`, rows come back in arbitrary order
 
 **Observed behavior:** both listings can return their rows in any order,
@@ -98,6 +111,40 @@ be a real behavior change that happens not to break either golden (both only
 have one row), so it would ship silently. The single-row goldens plus the
 in-Go multi-row count/membership assertions are a deliberate workaround for
 an untestable ordering, not an oversight to "fix" by sorting.
+
+**FIXED on `goqu-deferred-fixes`,** which is the follow-up the warning above
+was holding the change for. Both listings now sort:
+
+- `ListUsers` (`internal/qmsapi/db/user_goqu.go`) orders by `username`, which
+  is `UNIQUE` (`migrations/000001_users_table.up.sql:7`) and so is a total
+  order on its own. It is also the field the response identifies a user by —
+  `id` is a `uuid_generate_v1()` that means nothing to a caller.
+- `ListUpdatesForUser` (`internal/qmsapi/db/updates_goqu.go`) orders by
+  `updates.effective_date` ascending, then `updates.id`. The table is an audit
+  trail, so chronological is the meaningful order; the identifier is there
+  because `effective_date` is not unique — `AddUsages` stamps it with
+  `time.Now()`, and two updates written in one request share an instant.
+
+**The two multi-row assertions were strengthened from membership to order,**
+which is the point of the fix and the reason they existed in that weakened
+form:
+
+- `TestListUsersReturnsEveryUserInOrder` (`apitest/qms_root_test.go`, renamed
+  from `TestListUsersReturnsEveryUser`) creates `carol`, `alice`, `bob` in that
+  order and asserts the response is `[alice bob carol]` — it no longer sorts
+  the usernames before comparing.
+- `TestListUsageUpdatesReturnsEveryUpdateInOrder`
+  (`apitest/qms_usage_updates_test.go`, renamed from
+  `TestListUsageUpdatesReturnsEveryUpdate`) records three updates and then
+  rewrites their effective dates so the expected order is neither the order
+  they were written in nor their order by value, then asserts the exact
+  sequence. Without that rewrite the assertion would pass against physical row
+  order and prove nothing.
+
+Both were observed failing with the `Order` clauses removed
+(`usernames = [carol alice bob]`, `update values = [10 5 7]`), so they discriminate
+on the ordering rather than describing it. Neither single-row golden moved, as
+expected: one row has only one order.
 
 ## `GET /summary/{user}`: every nested quota and usage has a blank `subscription_id`
 
@@ -166,6 +213,42 @@ this branch's plan, so nobody translating a GORM query to goqu will pass
 through this code and rediscover it. Recording it here is the only way the
 knowledge survives past this task.
 
+**FIXED on `goqu-deferred-fixes`**, both halves separately, as the two
+different causes require:
+
+- **Usage:** `Usage.ToQMSUsage()` (`db/types.go`) now copies
+  `u.SubscriptionID` into `qms.Usage.SubscriptionId`. No query changed; the
+  column was already selected.
+- **Quota:** `db.Quota` gained a scalar `SubscriptionID string` field tagged
+  `db:"subscription_id"`, `SubscriptionQuotas` (`db/userplans.go`)
+  now selects `quotas.subscription_id` into it, and `Quota.ToQMSQuota()`
+  copies it across. `LoadQuotaDetails` (`db/quotas.go`), the only other query
+  that scans a `db.Quota`, selects the column too, so the new field is never
+  half-populated depending on which query filled the struct.
+
+The value is provably the right subscription rather than merely non-empty:
+both queries filter on `subscription_id = <the subscription being
+summarized>`, so the column can only hold that ID. Goldens that moved:
+`apitest/testdata/summary_basic.json` (two quotas and one usage) and
+`apitest/testdata/summary_unknown_user.json` (two quotas; the auto-created
+subscription has no usage rows yet).
+
+`ToQMSQuota`'s other caller is `addQuota` (`app/quotas.go`), the `PUT /quotas`
+handler. At the moment this commit landed, its golden did not move: that
+route still failed with the 500 recorded in the next section, so its response
+carried `"quota": null` and had no field to populate, making the
+`quotas.subscription_id` this commit added to `LoadQuotaDetails`'s select
+look like unexercised defensive scope creep. That is stale at this branch's
+tip — the fix recorded in the next section makes `PUT /quotas` succeed, and
+that same `SELECT` line is now what puts a real UUID into
+`apitest/testdata/goqu_quota_added.json`'s `subscription_id`. Removing the
+line makes `TestGoquAddQuota` fail with `"subscription_id": ""` where the
+golden expects a uuid, confirming the line is load-bearing at the tip, not
+merely defensive. `ToQMSUsage`'s only caller is `ToQMSSubscription`,
+whose only caller is `GET /summary/{user}`. `GET /users/{username}/usages`
+builds its own `qms.Usage` literals and already set `SubscriptionId`, so it
+is unaffected.
+
 ## `PUT /quotas`: a resource type identified only by name produces a 500
 
 **Observed behavior:** the request body shape the wire contract documents —
@@ -206,6 +289,26 @@ this task exists specifically to surface exactly this kind of latent bug
 before a caller shows up and hits it. Not a regression to fix on this
 branch — reproduce it, don't repair it.
 
+**FIXED on `goqu-deferred-fixes`.** `addQuota` (`app/quotas.go`) now resolves
+the resource type through `d.LookupResoureType` — the same call `addPlan`
+makes, spelled with the same existing typo — before it upserts, and passes the
+resolved `resourceType.ID` to both `UpsertQuota` and `LoadQuotaDetails` in
+place of the raw `request.Quota.ResourceType.Uuid`. The uuid path is
+unchanged: `LookupResoureType` prefers `ID` and falls back to the name only
+when `ID` is empty, so a request that supplies `resource_type.uuid` still
+takes exactly the query it took before. A request that supplies neither now
+gets `either the resource type ID or name must be specified` rather than the
+Postgres uuid-syntax error.
+
+Golden that moved: `apitest/testdata/goqu_quota_added.json`, which went from
+the 500 error envelope with `"quota": null` to the stored quota row — value
+`500`, the seeded `cpu.hours` resource type, the subscription ID, and the row's
+`uuid` and audit columns. `TestGoquAddQuota`'s `wantStatus` changed from
+`http.StatusInternalServerError` to `http.StatusOK` with it. As in
+`goqu_usage_added.json`, `created_by`/`last_modified_by` read `qms` rather than
+the `de` the upsert writes, because the `insert_username` triggers the
+migrations install overwrite them with the database session user.
+
 ## `GET /plans/{plan_id}` (goqu route): `plan_rates` and `effective_date` are silently dropped
 
 **Observed behavior:** `goqu_plan_get.json` shows `"plan_rates": null` for a
@@ -238,6 +341,22 @@ collapses this route onto the `/v1` implementation, or that refactors
 `getPlan` to use `ToQMSPlan()` for consistency with `listPlans`, would be a
 visible behavior change for any caller that starts depending on this route
 and needs to know it's fixing something rather than breaking something.
+
+**FIXED on `goqu-deferred-fixes`,** by the refactor the paragraph above
+anticipates: `getPlan` (`app/plans.go`) now returns `plan.ToQMSPlan()`
+instead of hand-building the response, so the quota defaults come back
+through `ToQMSQuotaDefault` with their effective dates and the rates
+`loadPlanDetails` already fetched are carried across. `ToQMSPlan` itself is
+unchanged, so its other callers — `listPlans` and `addPlan` — are unaffected.
+The empty case still marshals as `[]` rather than `null`: `ToQMSPlan` builds
+both slices with `make(..., len)`, which the deleted code did with an
+initialized empty slice. A missing plan still panics on the nil `*Plan` that
+`GetPlanByID` returns, exactly as the hand-built version did; that is the
+separate `plan == nil` landmine recorded later in this document, deliberately
+left alone here.
+
+Golden that moved: `apitest/testdata/goqu_plan_get.json`, whose `plan` object
+is now byte-identical to the Basic entry in `goqu_plans_list.json`.
 
 ## `PUT /users/{username}/usages`: the response drops the row's identity and audit fields
 
@@ -295,6 +414,30 @@ it actually returns. Recording it here, in the same terms as the
 `GET /plans/{plan_id}` gap above, keeps the two shape-omission findings this
 task turned up consistent with each other rather than one being written down
 and the other only living in a report.
+
+**FIXED on `goqu-deferred-fixes`.** The scalar the handler had was the
+problem, so the fix gives it a row to read: `db.LoadUsageDetails`
+(`db/usages.go`) is a new single-row loader for a (resource type,
+subscription) pair, selecting the same columns and joining `resource_types`
+the same way `SubscriptionUsages` does — it is the usage-side counterpart of
+the `LoadQuotaDetails` that `addQuota` already used for exactly this purpose.
+`addUsage` (`app/usages.go`) calls it after `CalculateUsage` in place of the
+second `GetCurrentUsage`, and returns `stored.ToQMSUsage()`. A row that
+somehow isn't there afterwards is an error rather than a zero-valued
+response, matching `addQuota`'s "unable to load the quota after saving".
+
+Golden that moved: `apitest/testdata/goqu_usage_added.json` — `uuid`,
+`created_at`, `created_by`, `last_modified_at` and `last_modified_by` now
+carry the row's real values, the same ones the sibling
+`GET /users/{username}/usages` reports in `usages_after_set.json`. Note that
+`created_by`/`last_modified_by` read `qms` rather than the `de` that
+`UpsertUsage` writes: the audit columns are set by the `insert_username`
+triggers the migrations install, so they hold the database session user. That
+is a property of the stored row, not of this change — the read route has
+always reported the same thing.
+
+`GetCurrentUsage` keeps its remaining caller inside `CalculateUsage`, which
+needs the scalar and nothing else.
 
 ## `goquTransaction` vs `transaction`: a failed ROLLBACK discards the `txAbort` marker
 
@@ -519,7 +662,7 @@ duplicates needs.
 | `goqu_plans_list.json` (`GET /plans`) | `plans_list.json` (`GET /v1/plans`) | Same data, different envelope and field names. `/v1` wraps in `{"status": "OK", "result": [...]}`; goqu wraps in `{"header": {"map": {}}, "error": null, "plans": [...]}`. Within each plan, `/v1` uses `"id"` where goqu uses `"uuid"` (plan, quota default, plan rate, and resource type all rename this way). Otherwise the same fields, same values, same nesting. |
 | `goqu_plan_get.json` (`GET /plans/{id}`) | `plans_get_basic.json` (`GET /v1/plans/{id}`) | Same envelope/naming differences as above, **plus a real content gap**: goqu's `plan_rates` is `null` and every `plan_quota_defaults[].effective_date` is `null`, while `/v1`'s response has both fully populated. This is the `getPlan` handler bug recorded above — both routes read the same underlying data via `db.GetPlanByID`, but the goqu HTTP handler drops fields the `/v1` handler keeps. |
 | `goqu_plan_added.json` (`PUT /plans`) | `v1_plan_created.json` (`POST /v1/plans`) | Very different shape, not just renamed fields. `/v1`'s create returns almost nothing on success — `{"status": "OK", "result": "Success"}`, no plan data at all. goqu's `PUT /plans` returns the full created plan (`uuid`, `name`, `description`, empty `plan_quota_defaults`/`plan_rates` arrays for this request). A caller wanting the new plan's ID back would need the goqu route; `/v1` doesn't give it one. |
-| `goqu_quota_added.json` (`PUT /quotas`) | `quota_update_cpu_hours.json` (`POST /v1/users/{u}/plan/{rt}/quota`) | Not a like-for-like comparison as recorded, since the goqu side is the 500 error body above — but structurally, even on a success path these two return fundamentally different things. `/v1`'s quota-update endpoint returns the **entire subscription** (plan, plan_rate, all quotas, all usages, user), nested three levels deep. goqu's route is built to return just the single updated `quota` object. Collapsing these isn't a rename exercise — it changes what the caller gets back, from a subscription snapshot to a single record or vice versa. |
+| `goqu_quota_added.json` (`PUT /quotas`) | `quota_update_cpu_hours.json` (`POST /v1/users/{u}/plan/{rt}/quota`) | Recorded when the goqu side was the 500 error body above; it now returns the stored quota, and the two still return fundamentally different things. `/v1`'s quota-update endpoint returns the **entire subscription** (plan, plan_rate, all quotas, all usages, user), nested three levels deep. goqu's route is built to return just the single updated `quota` object. Collapsing these isn't a rename exercise — it changes what the caller gets back, from a subscription snapshot to a single record or vice versa. |
 | `goqu_usage_added.json` (`PUT /users/{u}/usages`) | `usage_add_set.json` (`POST /v1/usages`) | Very different shape. `/v1`'s usage-update endpoint returns a bare string message — `{"status": "OK", "result": "successfully updated the usage for: testuser"}` — no usage data at all. goqu's route returns a `usage` object (incomplete, per the finding above, but structured — `usage` value, `resource_type`, `subscription_id`). A caller wanting the resulting usage value back programmatically would need the goqu route; `/v1` only gives a human-readable message. |
 | `goqu_user_updates.json` (`GET /users/{u}/updates`) | `v1_usage_updates_single.json` (`GET /v1/usages/{u}/updates`) | Same data, different shape beyond the envelope. `/v1` uses `"resource_types"` (plural) as the key for the nested resource type object; goqu uses `"resource_type"` (singular). `/v1`'s `metadata` is `"{}"` (a JSON object literal as a string); goqu's is `""` (empty string) — a different default representation of "no metadata," not just a naming difference. Field-for-field naming otherwise lines up (`id`/`uuid`, `user`, `operation`, `value`, `value_type`, `effective_date`). |
 
@@ -592,6 +735,29 @@ so the converted handler reads
 conflict, and every other error still yields the same 409 it did before. Do not
 "fix" the status code while converting; it is current behavior, and repairing it
 belongs in a follow-up change outside this branch.
+
+**FIXED on `goqu-deferred-fixes`.** The `err != nil && !errors.Is(err,
+qmsdb.ErrNotFound)` branch in `UpdateResourceType`
+(`internal/qmsapi/controllers/resource_types.go`) now returns
+`http.StatusInternalServerError`. The not-found case is untouched — absence
+still means "no homonym" and falls through to the update — and a real name
+collision still returns 409 from the branch below it.
+
+**It is exercised now.** `TestUpdateResourceTypeReportsAFailedHomonymLookup`
+(`apitest/qms_resource_types_test.go`) reaches the path through the HTTP
+surface, which requires the homonym lookup to fail while the
+`GetResourceTypeByID` three lines above it succeeds. The failure is therefore
+injected into the one row the homonym query reads rather than into the table or
+the connection: `resource_types.consumable` is nullable (migration
+`000013_multiyear_subscriptions.up.sql:9` adds it with a default and no NOT
+NULL) while `model.ResourceType.Consumable` is a plain `bool`, so a row
+inserted with `consumable = NULL` fails `ScanStruct` with
+`couldn't convert <nil> into type bool`. The test names that row as the new
+name and updates `cpu.hours`, so the ID lookup reads a healthy row and only the
+name lookup breaks. It was observed failing at 409 before the change — a real
+red-green cycle — and it also asserts that `cpu.hours` still has its name
+afterwards, since the transaction has to roll back either way. No golden moved;
+none covers this path in either direction.
 
 ## Converted read handlers now open a transaction, which changes the body of a database-down 500
 
@@ -950,6 +1116,34 @@ pre-populated struct and deliberately ignores the `found` result. Translating
 this one to `ErrNotFound` like every other single-row lookup in the package
 would turn a `200` into a `404` for a plan whose rates are all in the future.
 
+**FIXED on `goqu-deferred-fixes`.** That `200` is the bug, so the translation
+this entry forbade is exactly what was done: `GetActivePlanRate`
+(`internal/qmsapi/db/plan_goqu.go`) now checks the `found` result and returns
+`fmt.Errorf("%s: %w", wrapMsg, ErrNotFound)`, and the handler
+(`internal/qmsapi/controllers/plans.go`) maps that to a `404`, the way the
+sibling `/active-quota-defaults` route and the plan-existence check ahead of it
+already map their absences. The reason this outranks reproducing GORM: a plan
+whose only rate is future-dated answered
+`200 {"result":{"effective_date":"0001-01-01T00:00:00Z","rate":0}}`, and a
+billing caller reading `result.rate` charges zero rather than erroring —
+absence and free are indistinguishable in that body. The 404 message is
+`no active rate found for plan ID <id>`, deliberately distinct from the
+`plan ID <id> not found` the same route returns for an unknown plan, since here
+the plan does exist.
+
+The handler is the function's only caller (`internal/qmsapi/router.go:62` is
+its only route), so the blast radius is this one endpoint. **No golden moved:**
+`v1_plan_active_rate.json` pins the success case against the seeded `Basic`
+plan, whose rate is already in effect, and `v1_plan_active_rate_unknown.json`
+pins the unknown-plan 404, which `CheckPlanExistence` decides before this
+lookup runs. The new case is covered by `TestActivePlanRateWithNoRateInEffect`
+(`apitest/qms_plans_test.go`), which inserts a plan whose only rate is dated a
+year out — writing to `plans` and `plan_rates`, both of which `resetDB`
+preserves, so it drops the plan in a `t.Cleanup` and lets the `ON DELETE
+CASCADE` on `plan_rates.plan_id` take the rate with it. Against the pre-fix
+code it fails with `status = 200, want 404; body:
+{"result":{"effective_date":"0001-01-01T00:00:00Z","rate":0},"status":"OK"}`.
+
 **The two existence checks stay `count(*) > 0`.** `CheckPlanExistence` and
 `CheckPlanNameExistence` return `(bool, error)`, and their callers turn `false`
 into a 404 or a 400 of their own. Rewriting them as a lookup that reports
@@ -1110,6 +1304,23 @@ err.Error(), http.StatusBadRequest)` — and the goqu version keeps it, includin
 the `Begin()` failure now folded into the same branch. Recorded because it is
 the one handler in this file whose error mapping is visibly wrong and no golden
 reaches it; repairing it belongs outside this branch.
+
+**FIXED on `goqu-deferred-fixes`.** The branch now returns
+`http.StatusInternalServerError`. Bad input is untouched and still 400: the
+username, `include-expired` and `cutoff` parameters are all validated and
+rejected before the transaction opens, so nothing the caller controls can reach
+this branch.
+
+**It is exercised now.** `TestListUserSubscriptionsReportsADatabaseFailure`
+(`apitest/qms_subscriptions_test.go`) uses the same injection as the resource
+type fix above — a resource type row whose nullable `consumable` column is
+NULL, which `ScanStruct` cannot read into `model.ResourceType.Consumable` — and
+attaches it to the user's own subscription with a `quotas` row, so
+`quotasBySubscriptionID`'s `resourceTypesByID` call fails inside
+`ListSubscriptionsForUser`. The helper, `unscannableResourceType`, moved to
+`apitest/fixtures_test.go` when it acquired its second caller. The test was
+observed failing at 400 before the change. No golden moved; none covers this
+path.
 
 ## Task 15: `?limit=0` is the one reachable behavior change goqu introduces silently
 
@@ -1383,11 +1594,19 @@ per statement, which interpolation did not have — the analysis of which
 listings could approach it is in the report. The batch loaders' `IN` lists are
 now deduplicated (`uniqueIDs` in `internal/qmsapi/db/db.go`), which raises the
 ceiling by a large factor since real pages repeat plan, plan-rate, and
-resource-type IDs heavily. Still open, and left for a separate decision:
-`GET /v1/subscriptions` accepts an unbounded `limit`
-(`internal/qmsapi/controllers/subscriptions.go:288`, validated only `gte=0`),
-so a caller can still ask for a page large enough to hit the ceiling on its
-own. Adding an `lte=` bound is an observable API change and wasn't made here.
+resource-type IDs heavily. What remained after dedup — one bind parameter per
+row in `usersByID` and the `subscriptionIDs` list — is now closed too:
+`GET /v1/subscriptions`'s `limit` is validated `gte=0,lte=1000`
+(`internal/qmsapi/controllers/subscriptions.go:288`), rejecting rather than
+clamping, so a caller who overshoots gets a 400 instead of a silently
+truncated page. 1000 was chosen because the listing returns fully-loaded
+subscription objects (user, plan, plan quota defaults, plan rates, quotas,
+usages) — a page that size is already a multi-megabyte response against a
+default page size of 50, well before the row count could threaten the
+parameter ceiling on its own. `limit=0` (count-only) is unaffected, since
+`gte=0` already permitted it. Pinned by
+`TestBulkSubscriptionEndpoints/limit_at_the_upper_bound_succeeds` and
+`.../limit_above_the_upper_bound_is_rejected` in `apitest/qms_subscriptions_test.go`.
 
 **Two near-misses that were chased and cleared, recorded so nobody re-hunts
 them:**
@@ -1427,12 +1646,211 @@ returns exactly one row, whether or not anything matched the `WHERE` clause
 so `found` is always `true` and carries no information. The single-row
 *lookups* — `GetSubscriptionDetails`, `GetActivePlanRate`, and the rest that
 filter down to at most one real row — all check `found`, because for them a
-`false` is the only signal that nothing matched.
+`false` is the only signal that nothing matched. (`GetActivePlanRate` was the
+one exception when this was written: it discarded `found` to reproduce GORM's
+zero-valued `200`. `goqu-deferred-fixes` made it report `ErrNotFound` like the
+others — see "`GetActivePlanRate` must not report absence" above — so the rule
+now holds without exception.)
 
 That is a coherent two-rule convention: check `found` on a lookup, ignore it
 on a bare aggregate. Recorded here so the next reader doesn't "fix"
 `HasActiveSubscription` (or `planExists`, or either `COUNT(*)` scan) by adding
 a dead `if !found` branch.
+
+## `GET /v1/subscriptions?search=`: the LIKE escaping never escaped the backslash
+
+**Observed behavior:** a search term containing a backslash returned the wrong
+result set, silently. `search=a\b` matched every username containing `ab` and
+never matched the username `a\b` itself.
+
+**Root cause:** `ListSubscriptions` (`internal/qmsapi/db/subscriptions_goqu.go`)
+escaped two of PostgreSQL's three LIKE metacharacters and not the third:
+
+```go
+// The LIKE metacharacters are escaped so that a search term containing one matches it literally.
+search := strings.ReplaceAll(params.Search, "%", `\%`)
+search = strings.ReplaceAll(search, "_", `\_`)
+```
+
+The backslash *is* the escape character — it is PostgreSQL's default for
+`LIKE`, with no `ESCAPE` clause in play — so it is as much a metacharacter as
+`%` and `_`. Left unescaped it stays live in the pattern: `%a\b%` reaches
+PostgreSQL as "an `a`, then an escaped `b`", the escape is consumed, and the
+pattern degrades to `%ab%`. The failure is silent in both directions — a
+larger, unrelated result set for the caller, and no way to match a username
+that genuinely contains a backslash.
+
+This is **pre-existing**, byte-identical to the GORM original, so it is a real
+bug fix rather than a regression introduced by the conversion. The comment
+above it was wrong too, claiming the escaping makes a metacharacter "match it
+literally" while omitting the one it forgot.
+
+**FIXED on `goqu-deferred-fixes`.** The backslash is escaped, **first**:
+
+```go
+search := strings.ReplaceAll(params.Search, `\`, `\\`)
+search = strings.ReplaceAll(search, "%", `\%`)
+search = strings.ReplaceAll(search, "_", `\_`)
+```
+
+**The order is load-bearing, not stylistic.** Escaping the backslash last
+would also double the backslashes the `%` and `_` passes had just introduced,
+turning each `\%` back into a literal backslash followed by a live wildcard.
+Verified rather than assumed: with the backslash pass moved to the end,
+`search=a%b` returns the user named `a\b` — the exact inversion the ordering
+prevents. Escaping the escape character first is the standard rule, and it is
+the reason the percent-sign assertion below exists at all.
+
+Note this is a *pattern*-level escape, independent of the
+`standard_conforming_strings` hazard recorded above: since this branch turned
+on `goqu.SetDefaultPrepared(true)`, the search term is a bind parameter, so
+PostgreSQL's `LIKE` receives exactly the bytes assembled here and no
+string-literal escape pass sits between them.
+
+**No golden moved.** `subscriptions_list.json` covers the listing, but its
+fixture has no metacharacters in any username, so it cannot distinguish the
+two behaviors. Covered instead by
+`TestSubscriptionSearchEscapesLikeMetacharacters`
+(`apitest/qms_subscriptions_test.go`), which subscribes users named `a\b`,
+`a%b` and `ab` and asserts each search matches exactly the one username that
+contains the term literally. Against the pre-fix code the backslash case fails
+with `matched username = "ab"`; against a wrongly-ordered fix the percent case
+fails with `matched username = "a\b"`.
+
+## The converted controllers returned raw driver error text in 500 bodies
+
+**Observed behavior:** every `/v1` handler passed the error it got from the
+database layer straight into the response, via `txError(ctx, err.Error(), 500)`
+or `model.Error(ctx, err.Error(), 500)`. A caller who provoked a failure got
+lib/pq's own message: table names, index names, column positions, the `pq:`
+prefix. `GET /v1/resource-types` against a row the scan cannot decode answered
+
+```
+unable to list resource types: sql: Scan error on column index 3, name
+"consumable": sql/driver: couldn't convert <nil> (<nil>) into type bool
+```
+
+`CLAUDE.md` is explicit about this: log the real error server-side, return a
+generic message.
+
+**FIXED on `goqu-deferred-fixes`.** Two helpers in
+`internal/qmsapi/controllers/util.go` — `dbError` and `txDBError`, the latter
+for use inside a transaction callback where the response has to be wrapped so
+the transaction rolls back — log the error and return only a description of the
+operation that failed (`"unable to list the resource types"`). `usages.go` has
+a third, `usageError`, because its sites carry both kinds of error; see below.
+
+**Where the line was drawn.** The distinction is *who composed the message*,
+not what the status is:
+
+- **Sanitized** — an error returned by a `qmsdb.*` call (or by the transaction
+  wrapper) that the handler has already tested against every typed error it
+  knows about and matched none. Whatever is left is a driver error wrapped by
+  the db layer, and it reaches the caller as a 500.
+- **Kept** — anything the service composed itself: request binding and
+  validator output, `query.Validate*QueryParam` failures, the path-parameter
+  extractors, `fmt.Sprintf` messages the handler builds, and the typed
+  sentinels a handler explicitly matched (`qmsdb.ErrNotFound`,
+  `qmsdb.ErrResourceTypeConflict`, `qmsdb.ErrEmptySlice`, and the
+  `ErrInvalid*` set in `usages.go`). These are meaningful to the caller, and
+  several are pinned by goldens.
+
+Two cases needed a branch rather than a blanket rule, and both were found by
+existing tests failing rather than by reading:
+
+- **`ErrEmptySlice` is composed, not a driver error.** `SavePlanQuotaDefaults`
+  and `SavePlanRates` return it for a request body whose list is empty — the
+  service's own complaint, reproducing GORM, and pinned by
+  `TestPlanWritesWithEmptyInput` with the exact string
+  `unable to save the plan quota defaults: empty slice found`. Both handlers now
+  match it with `errors.Is` and return `err.Error()` unchanged, falling through
+  to `txDBError` only for a real failure. Blanket-sanitizing these two sites
+  broke that test, which is how the case was caught.
+- **`usages.go` sites carry either kind.** `httpStatusCode` classifies the
+  `ErrInvalid*`/`ErrUserNotFound` sentinels as 400/404 and everything else as
+  500, so the same `model.Error` call was returning both a composed message and
+  a driver message. `usageError` returns `err.Error()` when the classification
+  is not 500 and delegates to `dbError` when it is, which keeps
+  `usage_add_bad_update_type.json`'s `invalid update type: MULTIPLY` intact.
+
+**Deliberately left alone:** `subscriptions.go`'s sort-field invariant
+(`sort field name inconsistency detected...`) is a 500 but is composed and
+names nothing about the schema, and `plans.go`'s in-memory
+`ResourceTypeList.GetResourceTypeByName` failure is a 400 composed by the
+`model` package.
+
+**The example in the review's report is no longer reachable.** It cited
+`POST /v1/plans/{plan_id}/quota-defaults` with two entries sharing a resource
+type and effective date, returning pq's `duplicate key value violates unique
+constraint "plan_quota_defaults_resource_type_plan_effective_date_index"`.
+`NewPlanQuotaDefaultList.Validate` (`internal/qmsapi/httpmodel/new_plan.go:157`)
+now rejects that body with a 400 before the insert, and the handler separately
+checks the incoming defaults against the plan's existing ones, so the unique
+index is unreachable through that route. The leak was real at the other sites;
+the coverage below provokes it through a scan failure instead.
+
+**No golden moved, and none could:** every sanitized site produces a 500, and
+no golden in `apitest/testdata/` pins a 500 body — the pinned error bodies are
+all 400, 404 or 409, which is exactly the kept set. Covered by
+`TestResourceTypeListingDatabaseErrorIsNotLeaked` (`apitest/qms_plans_test.go`),
+and by an added assertion on the existing
+`TestListUserSubscriptionsReportsADatabaseFailure`
+(`apitest/qms_subscriptions_test.go`), which already provoked a driver error and
+checked only the status. Both use `assertNoDatabaseDetail`
+(`apitest/fixtures_test.go`), which greps the body for driver markers — `pq:`,
+`SQLSTATE`, `violates`, `constraint`, `Scan error`, `sql/driver`, `column
+index`. Bare table names are deliberately **not** on that list: "subscriptions"
+and "users" are ordinary words in a sanitized message like `unable to list the
+user's subscriptions`, so matching them would flag the fix rather than the bug.
+
+## `POST /v1/usages` with an unknown `resource_name` answered 500, not 400
+
+**Observed behavior:** posting a usage naming a resource type that does not
+exist returned a 500. A caller with a typo in `resource_name` reads that as a
+server fault and retries forever, and the retries can never succeed.
+
+**Root cause:** the not-found branch in `addUsage`
+(`internal/qmsapi/controllers/usages.go`) returned a bare formatted error:
+
+```go
+resourceType, err := qmsdb.GetResourceTypeByName(ctx, tx, usage.ResourceName)
+if errors.Is(err, qmsdb.ErrNotFound) {
+    return fmt.Errorf("resource type '%s' does not exist", usage.ResourceName)
+}
+```
+
+`httpStatusCode` (same file) classifies by matching sentinels with `errors.Is`,
+and this error wraps none of them, so it fell through to the `default` arm and
+became a 500. The structurally identical `update_type` branch four lines below
+already did the right thing, wrapping `ErrInvalidUpdateType` with `%w` — the two
+paths simply disagreed.
+
+This is a fresh instance of the trap recorded in "Four not-found conventions
+coexist" above: the sentinel exists precisely to keep a missing row from
+becoming a 500, and this branch bypassed it. The branch was dead under GORM —
+the resource-type lookup could not report absence — so `goqu-unification` is
+the first release in which it is reachable in this form.
+
+**FIXED on `goqu-deferred-fixes`.** No new sentinel was needed:
+`ErrInvalidResourceName` already exists in the same `var` block, is already
+classified as a 400 by `httpStatusCode`, and is already used by the
+empty-`resource_name` check at the top of `addUsage`. The branch now reads
+
+```go
+return fmt.Errorf("%w: %s", ErrInvalidResourceName, usage.ResourceName)
+```
+
+which is character-for-character the shape of the `ErrInvalidUpdateType` branch
+below it, so the two paths agree.
+
+**No golden moved.** `usage_add_bad_update_type.json` pins the sibling
+update-type case and is untouched; nothing pinned the resource-name case, and
+`update_unknown_resource_type.json` belongs to the NATS route in `app`, not this
+handler. Covered by the `an unknown resource name is refused` subtest of
+`TestUsageEndpoints` (`apitest/qms_subscriptions_test.go`), asserted rather than
+goldened so the diff against `goqu-baseline` stays limited to the six files the
+earlier fixes own. Against the pre-fix code it fails with `status = 500, want
+400`.
 
 ## The four transaction-wrapper defects, and why three earlier entries above are now wrong
 
@@ -1607,3 +2025,31 @@ response back before `middleware.Recover` — which runs outside the handler and
 therefore after every handler-frame defer — writes its 500. No `/v1` route has
 a reachable panic to provoke, so this is correct by construction and by frame
 ordering, not by test.
+
+## Sanitizing the error text took two transaction tests' evidence with it
+
+The wrapper fixes and the error-sanitization fixes were written on separate
+branches against the same base, and every controller file they share merged
+cleanly. Two tests still failed on the merged tree, because the two changes
+disagree about something no textual merge can see: the wrapper tests read the
+driver's error text out of the response body, and sanitizing is precisely the
+act of taking it out.
+
+- `TestCommitFailureIsReportedPerSubscription` matched the deferred trigger's
+  own `RAISE` text in `failure_reason`. That field now reads "unable to commit
+  the subscription" for every commit failure. The assertion moved to that
+  message — which only the transaction wrapper writes, since `AddSubscription`
+  reports its own failures in the entry it returns — plus a check that no
+  subscription row survives, so the response and the database still have to
+  agree.
+- `TestFailedRollbackKeepsTheHandlersResponse` matched `bad connection` in the
+  body as evidence that the backend really died and a ROLLBACK therefore really
+  failed. Nothing in the body can carry that now. The evidence moved to
+  `killBackendOnInsert`, which probes the trigger on its own connection when it
+  installs it; the test asserts only the handler's message, which is what it was
+  about.
+
+Both tests still fail against the pre-fix wrapper. The general point: a test
+that asserts on an error *message* is coupled to the error-handling policy, not
+just to the code path it is testing, and the coupling is invisible until a
+policy change lands beside it.

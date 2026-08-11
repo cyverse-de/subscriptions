@@ -442,6 +442,7 @@ func (u Usage) ToQMSUsage() *qms.Usage {
 	return &qms.Usage{
 		Uuid:           u.ID,
 		Usage:          u.Usage,
+		SubscriptionId: u.SubscriptionID,
 		ResourceType:   u.ResourceType.ToQMSResourceType(),
 		CreatedBy:      u.CreatedBy,
 		CreatedAt:      ptypes.New(u.CreatedAt),
@@ -453,6 +454,7 @@ func (u Usage) ToQMSUsage() *qms.Usage {
 type Quota struct {
 	ID             string       `db:"id" goqu:"defaultifempty"`
 	Quota          float64      `db:"quota"`
+	SubscriptionID string       `db:"subscription_id"`
 	ResourceType   ResourceType `db:"resource_types"`
 	Subscription   Subscription `db:"subscriptions"`
 	CreatedBy      string       `db:"created_by"`
@@ -465,6 +467,7 @@ func (q Quota) ToQMSQuota() *qms.Quota {
 	return &qms.Quota{
 		Uuid:           q.ID,
 		Quota:          q.Quota,
+		SubscriptionId: q.SubscriptionID,
 		ResourceType:   q.ResourceType.ToQMSResourceType(),
 		CreatedBy:      q.CreatedBy,
 		CreatedAt:      ptypes.New(q.CreatedAt),
