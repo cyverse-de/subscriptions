@@ -21,9 +21,14 @@ func TestAUsernameDoesNotLeakIntoALaterRequest(t *testing.T) {
 	resetDB(t)
 
 	// A route that logs a username, and would have left it on the package logger.
-	if logged := captureLogs(t, func() {
-		do(t, http.MethodPut, "/user/alice/updates", updateBody("cpu.hours", "cpu hours", "SET", 1))
-	}); !strings.Contains(logged, "alice") {
+	var got response
+	logged := captureLogs(t, func() {
+		got = do(t, http.MethodPut, "/user/alice/updates", updateBody("cpu.hours", "cpu hours", "SET", 1))
+	})
+	if got.status != http.StatusOK {
+		t.Fatalf("the setup request failed: status %d, body %s", got.status, got.body)
+	}
+	if !strings.Contains(logged, "user=alice") {
 		t.Fatalf("the request for alice did not log its own username:\n%s", logged)
 	}
 
@@ -93,9 +98,12 @@ func TestTheRequestLogNamesTheUserTheRequestIsAbout(t *testing.T) {
 	}
 }
 
-// Concurrent requests must each log their own username. Before the fix this
-// raced on the package logger, so the assertion below could see another
-// goroutine's user.
+// Concurrent requests each log their own username. The field is derived from
+// the request's own context, so this cannot catch a handler reintroducing the
+// package-logger assignment on its own -- its job is to run the shared logger
+// under -race, where that assignment shows up as a write to a shared variable.
+// The per-line assertion is still exact so that dropping the field, or deriving
+// it from anything request-independent, fails here.
 func TestConcurrentRequestsLogTheirOwnUsername(t *testing.T) {
 	resetDB(t)
 
@@ -104,26 +112,31 @@ func TestConcurrentRequestsLogTheirOwnUsername(t *testing.T) {
 	logged := captureLogs(t, func() {
 		var wg sync.WaitGroup
 		for i := range requests {
-			wg.Add(1)
-			go func(n int) {
-				defer wg.Done()
-				do(t, http.MethodGet, fmt.Sprintf("/users/user%d/usages", n), "")
-			}(i)
+			wg.Go(func() {
+				do(t, http.MethodGet, fmt.Sprintf("/users/user%d/usages", i), "")
+			})
 		}
 		wg.Wait()
 	})
 
-	// Every request logged is for the user named in its own URI.
+	// Every request line names the user from its own URI, and names one at all.
+	seen := 0
 	for line := range strings.SplitSeq(logged, "\n") {
 		if !strings.Contains(line, "uri=/users/") {
 			continue
 		}
 		for i := range requests {
 			user := fmt.Sprintf("user%d", i)
-			if strings.Contains(line, "uri=/users/"+user+"/") && strings.Contains(line, "user=") &&
-				!strings.Contains(line, "user="+user) {
-				t.Errorf("a request for %s was logged against another user:\n%s", user, line)
+			if !strings.Contains(line, "uri=/users/"+user+"/") {
+				continue
+			}
+			seen++
+			if !strings.Contains(line, "user="+user+" ") && !strings.HasSuffix(line, "user="+user) {
+				t.Errorf("a request for %s was not logged against %s:\n%s", user, user, line)
 			}
 		}
+	}
+	if seen != requests {
+		t.Errorf("found %d request log lines, want %d:\n%s", seen, requests, logged)
 	}
 }

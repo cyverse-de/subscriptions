@@ -11,6 +11,7 @@ import (
 	"github.com/cyverse-de/subscriptions/errors"
 	"github.com/cyverse-de/subscriptions/utils"
 	"github.com/labstack/echo/v4"
+	"github.com/sirupsen/logrus"
 )
 
 func (a *App) addUser(ctx context.Context, request *qms.AddUserRequest) *qms.AddUserResponse {
@@ -113,6 +114,15 @@ func (a *App) addUser(ctx context.Context, request *qms.AddUserRequest) *qms.Add
 			response.Error = errors.NatsError(ctx, err)
 			return response
 		}
+		// The only record of who was put on which plan, and whether it was paid:
+		// the request carries them in its body, so the route alone doesn't say.
+		log.WithFields(logrus.Fields{
+			"user":     username,
+			"plan":     plan.Name,
+			"paid":     opts.Paid,
+			"periods":  opts.Periods,
+			"end_date": opts.EndDate,
+		}).Info("subscribed the user to a plan")
 	}
 
 	// Commit all of the changes

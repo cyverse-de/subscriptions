@@ -141,29 +141,43 @@ func (d *Database) GetOrCreateActiveSubscription(
 
 	user, err := d.EnsureUser(ctx, username, opts...)
 	if err != nil {
-		log.Errorf("unable to ensure that the user exists in the database: %s", err)
+		log.Errorf("unable to ensure that %s exists in the database: %s", username, err)
+		return nil, err
+	}
+	// EnsureUser upserts and reads back in one statement, so a transaction that
+	// inserts the same new username first leaves the insert with nothing to
+	// return and the read behind the statement's snapshot. The caller retrying
+	// will find the row committed.
+	if user == nil {
+		err = fmt.Errorf("%s was created by a concurrent request; retry the request", username)
+		log.Error(err)
 		return nil, err
 	}
 
 	plan, err := d.GetPlanByName(ctx, DefaultPlanName, opts...)
 	if err != nil {
-		log.Errorf("unable to look up the default plan: %s", err)
+		log.Errorf("unable to look up the %s plan to subscribe %s to: %s", DefaultPlanName, username, err)
+		return nil, err
+	}
+	if plan == nil {
+		err = fmt.Errorf("the default subscription plan %s does not exist", DefaultPlanName)
+		log.Error(err)
 		return nil, err
 	}
 
 	subscriptionID, err := d.SetActiveSubscription(ctx, user.ID, plan, DefaultSubscriptionOptions(), opts...)
 	if err != nil {
-		log.Errorf("unable to subscribe the user to the default plan: %s", err)
+		log.Errorf("unable to subscribe %s to the %s plan: %s", username, DefaultPlanName, err)
 		return nil, err
 	}
 
 	subscription, err = d.GetSubscriptionByID(ctx, subscriptionID, opts...)
 	if err != nil {
-		log.Errorf("unable to look up the new subscription: %s", err)
+		log.Errorf("unable to look up the new subscription for %s: %s", username, err)
 		return nil, err
 	}
 	if subscription == nil {
-		err = fmt.Errorf("the newly inserted subscription could not be found")
+		err = fmt.Errorf("the subscription just created for %s could not be found", username)
 		log.Error(err)
 		return nil, err
 	}
