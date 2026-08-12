@@ -99,10 +99,17 @@ const effectiveDate = "2026-01-15T12:00:00Z"
 // nested user object: the handler overwrites it from the path, and pinning that
 // is part of the point.
 func updateBody(resourceName, unit, operation string, value float64) string {
+	return updateBodyOfType("usages", resourceName, unit, operation, value)
+}
+
+// updateBodyOfType renders an update body for either tracked metric. The two
+// value types take different branches in the handler, and only the usages
+// branch is exercised by the rest of the suite.
+func updateBodyOfType(valueType, resourceName, unit, operation string, value float64) string {
 	return fmt.Sprintf(
-		`{"update": {"value_type": "usages", "value": %v, "effective_date": %q,`+
+		`{"update": {"value_type": %q, "value": %v, "effective_date": %q,`+
 			`"resource_type": {"name": %q, "unit": %q}, "operation": {"name": %q}, "user": {}}}`,
-		value, effectiveDate, resourceName, unit, operation,
+		valueType, value, effectiveDate, resourceName, unit, operation,
 	)
 }
 

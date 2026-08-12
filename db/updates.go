@@ -151,44 +151,11 @@ func (d *Database) ProcessUpdateForUsage(ctx context.Context, update *Update, op
 	log = log.WithFields(logrus.Fields{"context": "usage update", "user": update.User.Username})
 
 	log.Debug("before getting active user plan")
-	subscription, err := d.GetActiveSubscription(ctx, update.User.Username, opts...)
+	subscription, err := d.GetOrCreateActiveSubscription(ctx, update.User.Username, opts...)
 	if err != nil {
 		return err
 	}
 	log.Debugf("after getting active user plan %s", subscription.ID)
-
-	// create a subscription if there isn't one
-	if subscription.ID == "" {
-		user, err := d.EnsureUser(ctx, update.User.Username, opts...)
-		if err != nil {
-			log.Errorf("unable to ensure that the user exists in the database: %s", err)
-			return err
-		}
-
-		plan, err := d.GetPlanByName(ctx, DefaultPlanName, opts...)
-		if err != nil {
-			log.Errorf("unable to look up the default plan: %s", err)
-			return err
-		}
-
-		subscriptionOpts := DefaultSubscriptionOptions()
-		subscriptionID, err := d.SetActiveSubscription(ctx, user.ID, plan, subscriptionOpts, opts...)
-		if err != nil {
-			log.Errorf("unable to subscribe the user to the default plan: %s", err)
-			return err
-		}
-
-		subscription, err = d.GetSubscriptionByID(ctx, subscriptionID, opts...)
-		if err != nil {
-			log.Errorf("unable to look up the new user plan: %s", err)
-			return err
-		}
-		if subscription == nil {
-			err = fmt.Errorf("the newly inserted user plan could not be found")
-			log.Error(err)
-			return err
-		}
-	}
 
 	log.Debugf("update operation name is %s", update.UpdateOperation.Name)
 	log.Debug("applying the update to the stored usage")
@@ -208,7 +175,7 @@ func (d *Database) ProcessUpdateForUsage(ctx context.Context, update *Update, op
 func (d *Database) ProcessUpdateForQuota(ctx context.Context, update *Update, opts ...QueryOption) error {
 	var err error
 
-	subscription, err := d.GetActiveSubscription(ctx, update.User.Username, opts...)
+	subscription, err := d.GetOrCreateActiveSubscription(ctx, update.User.Username, opts...)
 	if err != nil {
 		return err
 	}
