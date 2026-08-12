@@ -263,8 +263,6 @@ func (a *App) getUserUpdates(ctx context.Context, request *qms.UpdateListRequest
 		return response
 	}
 
-	log = log.WithFields(logrus.Fields{"user": username})
-
 	d := db.New(a.db)
 
 	mUpdates, err := d.UserUpdates(ctx, username)
@@ -334,8 +332,10 @@ func (a *App) addUserUpdate(ctx context.Context, request *qms.AddUpdateRequest) 
 		return response
 	}
 
-	// Add the username to the logger as a field for debugging.
-	log = log.WithFields(logrus.Fields{"user": username})
+	// Add the username to the logger as a field for debugging. The shadow is
+	// deliberate: assigning to the package logger would leave this username on
+	// every later request's log lines, whoever they were about.
+	log := log.WithFields(logrus.Fields{"user": username})
 
 	// Create a new database client.
 	d := db.New(a.db)

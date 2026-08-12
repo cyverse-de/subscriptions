@@ -11,7 +11,6 @@ import (
 	"github.com/cyverse-de/subscriptions/errors"
 	"github.com/cyverse-de/subscriptions/utils"
 	"github.com/labstack/echo/v4"
-	"github.com/sirupsen/logrus"
 )
 
 func (a *App) addUser(ctx context.Context, request *qms.AddUserRequest) *qms.AddUserResponse {
@@ -29,16 +28,6 @@ func (a *App) addUser(ctx context.Context, request *qms.AddUserRequest) *qms.Add
 		response.Error = errors.NatsError(ctx, err)
 		return response
 	}
-	log = log.WithFields(
-		logrus.Fields{
-			"user":     username,
-			"plan":     request.PlanName,
-			"paid":     opts.Paid,
-			"periods":  opts.Periods,
-			"end_date": opts.EndDate,
-		},
-	)
-
 	tx, err := d.Begin()
 	if err != nil {
 		response.Error = errors.NatsError(ctx, err)

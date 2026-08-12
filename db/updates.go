@@ -148,7 +148,7 @@ func (d *Database) GetUserUpdate(ctx context.Context, id string, opts ...QueryOp
 // accept any QueryOptions since it sets up the transaction and other options
 // itself.
 func (d *Database) ProcessUpdateForUsage(ctx context.Context, update *Update, opts ...QueryOption) error {
-	log = log.WithFields(logrus.Fields{"context": "usage update", "user": update.User.Username})
+	log := log.WithFields(logrus.Fields{"context": "usage update", "user": update.User.Username})
 
 	log.Debug("before getting active user plan")
 	subscription, err := d.GetOrCreateActiveSubscription(ctx, update.User.Username, opts...)

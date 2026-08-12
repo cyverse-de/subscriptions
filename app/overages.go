@@ -9,7 +9,6 @@ import (
 	"github.com/cyverse-de/subscriptions/db"
 	serrors "github.com/cyverse-de/subscriptions/errors"
 	"github.com/labstack/echo/v4"
-	"github.com/sirupsen/logrus"
 )
 
 func (a *App) getUserOverages(ctx context.Context, request *qms.AllUserOveragesRequest) *qms.OverageList {
@@ -80,8 +79,6 @@ func (a *App) checkUserOverages(ctx context.Context, request *qms.IsOverageReque
 		response.Error = serrors.NatsError(ctx, err)
 		return response
 	}
-
-	log = log.WithFields(logrus.Fields{"user": username})
 
 	d := db.New(a.db)
 
