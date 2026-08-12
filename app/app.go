@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -38,13 +39,19 @@ func logDeprecatedRoute(c echo.Context, replacement string) {
 // logRequest records the outcome of one request. The level follows the status so
 // that a routine 404 doesn't read like an outage: only a 5xx is this service's
 // fault, while a 4xx is worth seeing without being an error.
-func logRequest(_ echo.Context, v middleware.RequestLoggerValues) error {
+func logRequest(c echo.Context, v middleware.RequestLoggerValues) error {
 	entry := log.WithFields(logrus.Fields{
 		"method":  v.Method,
 		"uri":     v.URI,
 		"status":  v.Status,
 		"latency": v.Latency.String(),
 	})
+	// Taken from the route rather than from a handler, so the name on the line is
+	// always the subject of that request. The routes disagree on the parameter's
+	// name, and requests that never matched a route have neither.
+	if user := cmp.Or(c.Param("username"), c.Param("user")); user != "" {
+		entry = entry.WithField("user", user)
+	}
 	if v.Error != nil {
 		entry = entry.WithField("error", v.Error.Error())
 	}

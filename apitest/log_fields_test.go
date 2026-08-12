@@ -53,6 +53,46 @@ func TestAUsernameDoesNotLeakIntoALaterRequest(t *testing.T) {
 	}
 }
 
+// The request log names the subject of the request, taken from the route, so
+// an operator can find every line for a user. Handlers must not be the source
+// of that field: they only run on some routes, and one that sets it leaves it
+// on requests about everyone else.
+func TestTheRequestLogNamesTheUserTheRequestIsAbout(t *testing.T) {
+	resetDB(t)
+
+	testCases := []struct {
+		name     string
+		path     string
+		wantUser string
+	}{
+		{name: "the username parameter", path: "/users/carol/usages", wantUser: "user=carol"},
+		{name: "the user parameter", path: "/summary/dave", wantUser: "user=dave"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			logged := captureLogs(t, func() {
+				if got := do(t, http.MethodGet, testCase.path, ""); got.status != http.StatusOK {
+					t.Fatalf("status = %d, want %d; body: %s", got.status, http.StatusOK, got.body)
+				}
+			})
+
+			if !strings.Contains(logged, testCase.wantUser) {
+				t.Errorf("the request log does not carry %q:\n%s", testCase.wantUser, logged)
+			}
+		})
+	}
+
+	// A request that matched no route has no user to name, and must not borrow
+	// one from whatever ran before it.
+	logged := captureLogs(t, func() {
+		do(t, http.MethodGet, "/nonexistent-route", "")
+	})
+	if strings.Contains(logged, "user=") {
+		t.Errorf("a request with no user in it logged one:\n%s", logged)
+	}
+}
+
 // Concurrent requests must each log their own username. Before the fix this
 // raced on the package logger, so the assertion below could see another
 // goroutine's user.
