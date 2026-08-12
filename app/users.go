@@ -29,16 +29,6 @@ func (a *App) addUser(ctx context.Context, request *qms.AddUserRequest) *qms.Add
 		response.Error = errors.NatsError(ctx, err)
 		return response
 	}
-	log = log.WithFields(
-		logrus.Fields{
-			"user":     username,
-			"plan":     request.PlanName,
-			"paid":     opts.Paid,
-			"periods":  opts.Periods,
-			"end_date": opts.EndDate,
-		},
-	)
-
 	tx, err := d.Begin()
 	if err != nil {
 		response.Error = errors.NatsError(ctx, err)
@@ -124,6 +114,15 @@ func (a *App) addUser(ctx context.Context, request *qms.AddUserRequest) *qms.Add
 			response.Error = errors.NatsError(ctx, err)
 			return response
 		}
+		// The only record of who was put on which plan, and whether it was paid:
+		// the request carries them in its body, so the route alone doesn't say.
+		log.WithFields(logrus.Fields{
+			"user":     username,
+			"plan":     plan.Name,
+			"paid":     opts.Paid,
+			"periods":  opts.Periods,
+			"end_date": opts.EndDate,
+		}).Info("subscribed the user to a plan")
 	}
 
 	// Commit all of the changes

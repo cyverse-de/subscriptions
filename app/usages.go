@@ -29,6 +29,13 @@ func (a *App) getUsages(ctx context.Context, request *qms.GetUsages) *qms.UsageL
 		return response
 	}
 
+	// A user with no subscription has recorded no usage. Reading the list is not
+	// reason enough to subscribe them, so report the empty list the response was
+	// created with.
+	if subscription == nil {
+		return response
+	}
+
 	usages, err := d.SubscriptionUsages(ctx, subscription.ID)
 	if err != nil {
 		response.Error = errors.NatsError(ctx, err)
@@ -95,8 +102,9 @@ func (a *App) addUsage(ctx context.Context, request *qms.AddUsage) *qms.UsageRes
 		return response
 	}
 	err = tx.Wrap(func() error {
-		// Get the user's current active subscription.
-		subscription, err := d.GetActiveSubscription(ctx, username, db.WithTX(tx))
+		// Get the user's current active subscription, subscribing them to the
+		// default plan if they have none, so the usage has somewhere to hang off.
+		subscription, err := d.GetOrCreateActiveSubscription(ctx, username, db.WithTX(tx))
 		if err != nil {
 			return err
 		}

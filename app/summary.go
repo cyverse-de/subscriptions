@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"github.com/cyverse-de/go-mod/pbinit"
@@ -33,44 +32,11 @@ func (a *App) GetUserSummary(ctx context.Context, username string) (*qms.Subscri
 	err = tx.Wrap(func() error {
 		log.Debugf("before getting the active user plan: %s", username)
 
-		subscription, err = d.GetActiveSubscription(ctx, username, db.WithTX(tx))
+		subscription, err = d.GetOrCreateActiveSubscription(ctx, username, db.WithTX(tx))
 		if err != nil {
-			log.Errorf("unable to get the active user plan: %s", err)
 			return err
 		}
 		log.Debugf("after getting the active user plan: %s", username)
-
-		if subscription == nil || subscription.ID == "" {
-			user, err := d.EnsureUser(ctx, username, db.WithTX(tx))
-			if err != nil {
-				log.Errorf("unable to ensure that the user exists in the database: %s", err)
-				return err
-			}
-
-			plan, err := d.GetPlanByName(ctx, db.DefaultPlanName, db.WithTX(tx))
-			if err != nil {
-				log.Errorf("unable to look up the default plan: %s", err)
-				return err
-			}
-
-			opts := db.DefaultSubscriptionOptions()
-			subscriptionID, err := d.SetActiveSubscription(ctx, user.ID, plan, opts, db.WithTX(tx))
-			if err != nil {
-				log.Errorf("unable to subscribe the user to the default plan: %s", err)
-				return err
-			}
-
-			subscription, err = d.GetSubscriptionByID(ctx, subscriptionID, db.WithTX(tx))
-			if err != nil {
-				log.Errorf("unable to look up the new user plan: %s", err)
-				return err
-			}
-			if subscription == nil {
-				err = fmt.Errorf("the newly inserted user plan could not be found")
-				log.Error(err)
-				return err
-			}
-		}
 
 		log.Debug("before getting the user plan details")
 		err = d.LoadSubscriptionDetails(ctx, subscription, db.WithTX(tx))

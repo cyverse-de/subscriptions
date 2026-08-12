@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -38,13 +39,19 @@ func logDeprecatedRoute(c echo.Context, replacement string) {
 // logRequest records the outcome of one request. The level follows the status so
 // that a routine 404 doesn't read like an outage: only a 5xx is this service's
 // fault, while a 4xx is worth seeing without being an error.
-func logRequest(_ echo.Context, v middleware.RequestLoggerValues) error {
+func logRequest(c echo.Context, v middleware.RequestLoggerValues) error {
 	entry := log.WithFields(logrus.Fields{
 		"method":  v.Method,
 		"uri":     v.URI,
 		"status":  v.Status,
 		"latency": v.Latency.String(),
 	})
+	// Taken from the route rather than from a handler, so the name on the line is
+	// always the subject of that request. The routes disagree on the parameter's
+	// name, and requests that never matched a route have neither.
+	if user := cmp.Or(c.Param("username"), c.Param("user")); user != "" {
+		entry = entry.WithField("user", user)
+	}
 	if v.Error != nil {
 		entry = entry.WithField("error", v.Error.Error())
 	}
@@ -263,8 +270,6 @@ func (a *App) getUserUpdates(ctx context.Context, request *qms.UpdateListRequest
 		return response
 	}
 
-	log = log.WithFields(logrus.Fields{"user": username})
-
 	d := db.New(a.db)
 
 	mUpdates, err := d.UserUpdates(ctx, username)
@@ -334,8 +339,10 @@ func (a *App) addUserUpdate(ctx context.Context, request *qms.AddUpdateRequest) 
 		return response
 	}
 
-	// Add the username to the logger as a field for debugging.
-	log = log.WithFields(logrus.Fields{"user": username})
+	// Add the username to the logger as a field for debugging. The shadow is
+	// deliberate: assigning to the package logger would leave this username on
+	// every later request's log lines, whoever they were about.
+	log := log.WithFields(logrus.Fields{"user": username})
 
 	// Create a new database client.
 	d := db.New(a.db)
