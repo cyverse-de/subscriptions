@@ -5,6 +5,7 @@ import "fmt"
 const (
 	RESOURCE_TYPE_CPU_HOURS = "cpu.hours"
 	RESOURCE_TYPE_DATA_SIZE = "data.size"
+	RESOURCE_TYPE_GPU_HOURS = "gpu.hours"
 )
 
 // ResourceTypeList represents a list of resource types.

@@ -109,11 +109,13 @@ func (rt ResourceType) ValidateForPlan() error {
 var ResourceTypeNames = []string{
 	"cpu.hours",
 	"data.size",
+	"gpu.hours",
 }
 
 var ResourceTypeUnits = []string{
 	"cpu hours",
 	"bytes",
+	"gpu hours",
 }
 
 const (
