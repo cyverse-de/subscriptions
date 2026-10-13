@@ -1,10 +1,18 @@
 package model
 
-import "fmt"
+import (
+	"fmt"
 
+	"github.com/cyverse-de/p/go/qms"
+)
+
+// Resource type name constants — aliases for the canonical values in
+// p/go/qms. Kept as named constants here so existing callers
+// (e.g. subscriptions.go:GetDefaultQuotaValue) don't need to import qms directly.
 const (
-	RESOURCE_TYPE_CPU_HOURS = "cpu.hours"
-	RESOURCE_TYPE_DATA_SIZE = "data.size"
+	RESOURCE_TYPE_CPU_HOURS = qms.ResourceTypeCPUHours
+	RESOURCE_TYPE_DATA_SIZE = qms.ResourceTypeDataSize
+	RESOURCE_TYPE_GPU_HOURS = qms.ResourceTypeGPUHours
 )
 
 // ResourceTypeList represents a list of resource types.

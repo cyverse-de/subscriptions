@@ -232,6 +232,7 @@ var seededIDs = map[string]bool{
 	"d80b5482-98dc-11ec-bbe3-406c8f3e9cbb": true, // plan: Commercial
 	"99e3bc7e-950a-11ec-84a4-406c8f3e9cbb": true, // resource type: cpu.hours
 	"99e3f91e-950a-11ec-84a4-406c8f3e9cbb": true, // resource type: data.size
+	"bd0cef09-051e-4773-824c-c1902992bc41": true, // resource type: gpu.hours
 	"f1f9df66-9676-11ec-aa73-406c8f3e9cbb": true, // update operation: ADD
 	"f1fa4a1e-9676-11ec-aa73-406c8f3e9cbb": true, // update operation: SET
 }

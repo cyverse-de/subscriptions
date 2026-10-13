@@ -11,6 +11,12 @@
       "id": "99e3f91e-950a-11ec-84a4-406c8f3e9cbb",
       "name": "data.size",
       "unit": "bytes"
+    },
+    {
+      "consumable": true,
+      "id": "bd0cef09-051e-4773-824c-c1902992bc41",
+      "name": "gpu.hours",
+      "unit": "gpu hours"
     }
   ],
   "status": "OK"
