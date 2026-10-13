@@ -16,6 +16,7 @@ import (
 	"github.com/cyverse-de/subscriptions/errors"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/controllers"
+	"github.com/doug-martin/goqu/v9"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -166,6 +167,7 @@ func New(db *sqlx.DB, userSuffix string, reportOverages bool) *App {
 	app.Router.PUT("/users", app.AddUserHTTPHandler)
 	app.Router.GET("/users/:username/updates", app.GetUserUpdatesHTTPHandler)
 	app.Router.PUT("/user/:username/updates", app.AddUserUpdateHTTPHandler)
+	app.Router.PUT("/user/:username/updates/batch", app.AddUserUpdatesBatchHTTPHandler)
 	app.Router.GET("/users/:username/overages", app.GetUserOveragesHTTPHandler)
 	app.Router.GET("/users/:username/overages/:resource_name", app.CheckUserOveragesHTTPHandler)
 	app.Router.GET("/users/:username/usages", app.GetUsagesHTTPHandler)
@@ -519,5 +521,248 @@ func (a *App) AddUserUpdateHTTPHandler(c echo.Context) error {
 		return c.JSON(int(response.Error.StatusCode), response)
 	}
 
+	return c.JSON(http.StatusOK, response)
+}
+
+// validateSingleUpdate validates a bare *qms.Update, returning the fixed
+// username or an error. This is the batch-compatible equivalent of
+// validateUpdate, which takes an *AddUpdateRequest wrapper.
+func (a *App) validateSingleUpdate(update *qms.Update) (string, error) {
+	if update == nil || update.GetUser() == nil ||
+		update.GetResourceType() == nil || update.GetOperation() == nil {
+		return "", errors.ErrInvalidRequestBody
+	}
+
+	username, err := a.FixUsername(update.User.Username)
+	if err != nil {
+		return "", err
+	}
+
+	if update.ResourceType.Name == "" || !lo.Contains[string](
+		db.ResourceTypeNames,
+		update.ResourceType.Name,
+	) {
+		return username, errors.ErrInvalidResourceName
+	}
+
+	if update.ResourceType.Unit == "" || !lo.Contains[string](
+		db.ResourceTypeUnits,
+		update.ResourceType.Unit,
+	) {
+		return username, errors.ErrInvalidResourceUnit
+	}
+
+	if update.Operation.Name == "" || !lo.Contains[string](
+		db.UpdateOperationNames,
+		update.Operation.Name,
+	) {
+		return username, errors.ErrInvalidOperationName
+	}
+
+	if update.ValueType == "" || !lo.Contains[string](
+		[]string{db.UsagesTrackedMetric, db.QuotasTrackedMetric},
+		update.ValueType,
+	) {
+		return username, errors.ErrInvalidValueType
+	}
+
+	if update.EffectiveDate == nil {
+		return username, errors.ErrInvalidEffectiveDate
+	}
+
+	return username, nil
+}
+
+// applyUpdate processes a single update inside an existing transaction,
+// returning the recorded update. This is the shared core used by the batch
+// handler; the existing single-update handler has its own inline copy for
+// backward compatibility.
+func (a *App) applyUpdate(ctx context.Context, d *db.Database, tx *goqu.TxDatabase, update *qms.Update, username string) (*qms.Update, error) {
+	var (
+		err                                 error
+		userID, resourceTypeID, operationID string
+	)
+
+	ulog := log.WithFields(logrus.Fields{"user": username})
+
+	// Resolve user ID.
+	if update.User.Uuid == "" {
+		ulog.Infof("getting user ID for %s", username)
+		user, err := d.EnsureUser(ctx, username, db.WithTX(tx))
+		if err != nil {
+			return nil, err
+		}
+		userID = user.ID
+	} else {
+		userID = update.User.Uuid
+	}
+
+	// Resolve resource type ID.
+	if update.ResourceType.Uuid == "" {
+		resourceTypeID, err = d.GetResourceTypeID(
+			ctx,
+			update.ResourceType.Name,
+			update.ResourceType.Unit,
+			db.WithTX(tx),
+		)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		resourceTypeID = update.ResourceType.Uuid
+	}
+
+	// Resolve operation ID.
+	if update.Operation.Uuid == "" {
+		operationID, err = d.GetOperationID(
+			ctx,
+			update.Operation.Name,
+			db.WithTX(tx),
+		)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		operationID = update.Operation.Uuid
+	}
+
+	// Build and insert the update.
+	dbUpdate := &db.Update{
+		ValueType:     update.ValueType,
+		Value:         update.Value,
+		EffectiveDate: update.EffectiveDate.AsTime(),
+		ResourceType: db.ResourceType{
+			ID:         resourceTypeID,
+			Name:       update.ResourceType.Name,
+			Unit:       update.ResourceType.Unit,
+			Consumable: update.ResourceType.Consumable,
+		},
+		User: db.User{
+			ID:       userID,
+			Username: username,
+		},
+		UpdateOperation: db.UpdateOperation{
+			ID:   operationID,
+			Name: update.Operation.Name,
+		},
+		Metadata: update.Metadata,
+	}
+
+	ulog.Info("adding update to the database")
+	if _, err = d.AddUserUpdate(ctx, dbUpdate, db.WithTX(tx)); err != nil {
+		return nil, err
+	}
+
+	// Process the update (apply to usage or quota).
+	switch dbUpdate.ValueType {
+	case db.UsagesTrackedMetric:
+		if err = d.ProcessUpdateForUsage(ctx, dbUpdate, db.WithTX(tx)); err != nil {
+			return nil, err
+		}
+	case db.QuotasTrackedMetric:
+		if err = d.ProcessUpdateForQuota(ctx, dbUpdate, db.WithTX(tx)); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unknown value type in update: %s", dbUpdate.ValueType)
+	}
+
+	// Read back the recorded update.
+	recorded, err := d.GetUserUpdate(ctx, dbUpdate.ID, db.WithTX(tx))
+	if err != nil {
+		return nil, err
+	}
+	if recorded == nil {
+		return nil, fmt.Errorf("unable to find the user update after recording it: %s", dbUpdate.ID)
+	}
+
+	return &qms.Update{
+		Uuid:      recorded.ID,
+		ValueType: recorded.ValueType,
+		Value:     recorded.Value,
+		ResourceType: &qms.ResourceType{
+			Uuid:       recorded.ResourceType.ID,
+			Name:       recorded.ResourceType.Name,
+			Unit:       recorded.ResourceType.Unit,
+			Consumable: recorded.ResourceType.Consumable,
+		},
+		EffectiveDate: ptypes.New(recorded.EffectiveDate),
+		Operation: &qms.UpdateOperation{
+			Uuid: recorded.UpdateOperation.ID,
+			Name: recorded.UpdateOperation.Name,
+		},
+		User: &qms.QMSUser{
+			Uuid:     userID,
+			Username: username,
+		},
+	}, nil
+}
+
+// AddUserUpdatesBatchHTTPHandler applies multiple updates atomically in a
+// single database transaction. All updates succeed or fail together.
+func (a *App) AddUserUpdatesBatchHTTPHandler(c echo.Context) error {
+	var request qms.AddUpdatesRequest
+
+	ctx := c.Request().Context()
+
+	if err := c.Bind(&request); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"message": "bad request",
+		})
+	}
+
+	pathUsername := c.Param("username")
+	response := &qms.AddUpdatesResponse{}
+
+	// An empty batch is a no-op success.
+	if len(request.Updates) == 0 {
+		return c.JSON(http.StatusOK, response)
+	}
+
+	// Validate every update before opening a transaction.
+	for i, update := range request.Updates {
+		if update == nil {
+			response.Error = errors.NatsError(ctx, errors.ErrInvalidRequestBody)
+			return c.JSON(http.StatusBadRequest, response)
+		}
+		// The path username is authoritative for every update in the batch.
+		update.User = &qms.QMSUser{Username: pathUsername}
+
+		if _, err := a.validateSingleUpdate(update); err != nil {
+			response.Error = errors.NatsError(ctx, fmt.Errorf("update %d: %w", i, err))
+			return c.JSON(http.StatusBadRequest, response)
+		}
+	}
+
+	username, err := a.FixUsername(pathUsername)
+	if err != nil {
+		response.Error = errors.NatsError(ctx, err)
+		return c.JSON(http.StatusInternalServerError, response)
+	}
+
+	d := db.New(a.db)
+	tx, err := d.Begin()
+	if err != nil {
+		response.Error = errors.NatsError(ctx, err)
+		return c.JSON(http.StatusInternalServerError, response)
+	}
+
+	var recorded []*qms.Update
+	err = tx.Wrap(func() error {
+		for _, update := range request.Updates {
+			result, err := a.applyUpdate(ctx, d, tx, update, username)
+			if err != nil {
+				return err
+			}
+			recorded = append(recorded, result)
+		}
+		return nil
+	})
+	if err != nil {
+		response.Error = errors.NatsError(ctx, err)
+		return c.JSON(http.StatusInternalServerError, response)
+	}
+
+	response.Updates = recorded
 	return c.JSON(http.StatusOK, response)
 }
