@@ -9,7 +9,7 @@ require (
 	github.com/cyverse-de/go-mod/otelutils v0.0.5
 	github.com/cyverse-de/go-mod/pbinit v0.2.0
 	github.com/cyverse-de/p/go/ptypes v0.1.0
-	github.com/cyverse-de/p/go/qms v0.3.1
+	github.com/cyverse-de/p/go/qms v0.3.2
 	github.com/cyverse-de/p/go/requests v0.1.0
 	github.com/cyverse-de/p/go/svcerror v0.1.0
 	github.com/doug-martin/goqu/v9 v9.19.0
