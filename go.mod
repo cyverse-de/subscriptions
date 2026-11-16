@@ -3,7 +3,7 @@ module github.com/cyverse-de/subscriptions
 go 1.27
 
 require (
-	github.com/cyverse-de/echo-middleware/v2 v2.0.3
+	github.com/cyverse-de/echo-middleware/v3 v3.0.2
 	github.com/cyverse-de/go-mod/cfg v0.0.3
 	github.com/cyverse-de/go-mod/logging v0.0.4
 	github.com/cyverse-de/go-mod/otelutils v0.0.6
@@ -65,6 +65,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.33.0 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/klauspost/compress v1.20.4 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20261101121723-be84dd9509a0 // indirect

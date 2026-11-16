@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/cyverse-de/echo-middleware/v2/params"
+	"github.com/cyverse-de/echo-middleware/v3/params"
 	qmsdb "github.com/cyverse-de/subscriptions/internal/qmsapi/db"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/httpmodel"
 	"github.com/cyverse-de/subscriptions/internal/qmsapi/model"
