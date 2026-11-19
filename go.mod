@@ -3,16 +3,16 @@ module github.com/cyverse-de/subscriptions
 go 1.27
 
 require (
-	github.com/cyverse-de/echo-middleware/v3 v3.0.2
-	github.com/cyverse-de/go-mod/cfg v0.0.3
-	github.com/cyverse-de/go-mod/logging v0.0.4
-	github.com/cyverse-de/go-mod/otelutils v0.0.6
-	github.com/cyverse-de/go-mod/pbinit v0.2.0
-	github.com/cyverse-de/p/go/ptypes v0.1.0
-	github.com/cyverse-de/p/go/qms v0.3.2
-	github.com/cyverse-de/p/go/requests v0.1.0
-	github.com/cyverse-de/p/go/svcerror v0.1.0
-	github.com/doug-martin/goqu/v9 v9.25.0
+	github.com/cyverse-de/echo-middleware/v3 v3.0.3
+	github.com/cyverse-de/go-mod/cfg v0.0.4
+	github.com/cyverse-de/go-mod/logging v0.0.5
+	github.com/cyverse-de/go-mod/otelutils v0.0.7
+	github.com/cyverse-de/go-mod/pbinit v0.2.1
+	github.com/cyverse-de/p/go/ptypes v0.1.1
+	github.com/cyverse-de/p/go/qms v0.3.4
+	github.com/cyverse-de/p/go/requests v0.1.2
+	github.com/cyverse-de/p/go/svcerror v0.1.2
+	github.com/doug-martin/goqu/v9 v9.27.0
 	github.com/go-playground/validator/v10 v10.30.6
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
@@ -43,13 +43,13 @@ require (
 	github.com/containerd/log v0.2.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/cyverse-de/go-mod/gotelnats v0.1.0 // indirect
-	github.com/cyverse-de/p/go/analysis v0.1.0 // indirect
-	github.com/cyverse-de/p/go/apps v0.1.0 // indirect
-	github.com/cyverse-de/p/go/containers v0.1.0 // indirect
-	github.com/cyverse-de/p/go/header v0.1.0 // indirect
-	github.com/cyverse-de/p/go/monitoring v0.1.0 // indirect
-	github.com/cyverse-de/p/go/user v0.1.0 // indirect
+	github.com/cyverse-de/go-mod/gotelnats v0.1.1 // indirect
+	github.com/cyverse-de/p/go/analysis v0.1.2 // indirect
+	github.com/cyverse-de/p/go/apps v0.1.2 // indirect
+	github.com/cyverse-de/p/go/containers v0.1.2 // indirect
+	github.com/cyverse-de/p/go/header v0.1.1 // indirect
+	github.com/cyverse-de/p/go/monitoring v0.1.2 // indirect
+	github.com/cyverse-de/p/go/user v0.1.2 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.8.2 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
@@ -62,7 +62,7 @@ require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-playground/locales v0.14.2 // indirect
 	github.com/go-playground/universal-translator v0.18.2 // indirect
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.33.0 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.34.0 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -84,7 +84,7 @@ require (
 	github.com/moby/sys/user v0.5.0 // indirect
 	github.com/moby/sys/userns v0.2.1 // indirect
 	github.com/moby/term v0.5.2 // indirect
-	github.com/nats-io/nats.go v1.55.0 // indirect
+	github.com/nats-io/nats.go v1.56.0 // indirect
 	github.com/nats-io/nkeys v0.4.17 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
@@ -107,12 +107,12 @@ require (
 	go.opentelemetry.io/proto/otlp v1.11.1 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/crypto v0.59.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20261116203732-fd2c7689a808 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261116203732-fd2c7689a808 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20261118221215-c8830f628b3f // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261118221215-c8830f628b3f // indirect
 	google.golang.org/grpc v1.85.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
